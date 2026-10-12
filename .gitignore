@@ -1,0 +1,24 @@
+# Local credentials and machine-specific agent settings.
+.env
+.env.*
+!.env.example
+/.aws/
+/.codex/
+/.agents/
+# Generated files and local environments.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+*.part
+*.tmp
+*.swp
+.DS_Store
+/dist/
+/build/
+/coverage/
+/local-data/
