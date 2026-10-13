@@ -42,7 +42,7 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /methods/{id}/{version}` | One method. |
 | `GET /datasets` | Datasets with state, findings, last index time, and observation counts by state. |
 | `POST /datasets/{id}/index` | Queues one `tess-spoc-index` job. The status code is 202. A queued or running index job for the dataset gives 409. |
-| `GET /observations` | Observations. Filters: `dataset_id`, `target_id`, `state`, `label` (matches `labels.label`), `limit`, `offset`. |
+| `GET /observations` | Observations. Filters: `dataset_id`, `target_id`, `state`, `class` (matches `labels.class`: `planet_host`, `no_known_planet`, or `eclipsing_binary`), `limit`, `offset`. |
 | `GET /observations/{id}` | One observation with header, labels, findings, and light-curve artifacts. |
 | `POST /runs` | Creates a run and one queued job for each observation. The status code is 201. |
 | `GET /runs` | Runs, newest first, with job counts by state. |

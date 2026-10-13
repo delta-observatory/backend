@@ -95,9 +95,9 @@ def test_index_conflict(client, conn):
 
 
 def test_observations(client, conn):
-    a = add_observation(conn, tic=2, labels={'label': 'planet-host'})
-    add_observation(conn, tic=3, labels={'label': 'no-known-planet'})
-    listed = client.get('/api/observations', params={'label': 'planet-host'}).json()
+    a = add_observation(conn, tic=2, labels={'class': 'planet_host'})
+    add_observation(conn, tic=3, labels={'class': 'no_known_planet'})
+    listed = client.get('/api/observations', params={'class': 'planet_host'}).json()
     assert listed['total'] == 1 and listed['items'][0]['id'] == str(a)
     detail = client.get(f'/api/observations/{a}').json()
     assert detail['target_id'] == 'TIC:2' and detail['artifacts'] == []

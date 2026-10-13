@@ -143,7 +143,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         dataset_id: str | None = None,
         target_id: str | None = None,
         state: str | None = None,
-        label: str | None = None,
+        label_class: str | None = Query(None, alias='class',
+                                        description='Label class: planet_host, no_known_planet, or eclipsing_binary.'),
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
     ):
@@ -152,9 +153,9 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             if value is not None:
                 where.append(f'{column} = %s')
                 args.append(value)
-        if label is not None:
-            where.append("labels ->> 'label' = %s")
-            args.append(label)
+        if label_class is not None:
+            where.append("labels ->> 'class' = %s")
+            args.append(label_class)
         clause = ('WHERE ' + ' AND '.join(where)) if where else ''
         total = conn.execute(f'SELECT count(*) AS n FROM observation {clause}', args).fetchone()['n']
         rows = conn.execute(f"""
