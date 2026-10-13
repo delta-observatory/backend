@@ -1,0 +1,7 @@
+{
+  "format": "columns/1",
+  "length": 1,
+  "columns": [
+    {"name": "Time", "dtype": "float64", "values": [1.0]}
+  ]
+}

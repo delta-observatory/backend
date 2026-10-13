@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/job/v1.schema.json",
+  "title": "Job document, version 1",
+  "description": "One unit of worker execution. The API or a worker writes it to job.document. A worker reads it, checks it against this schema, and executes it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "job_id", "run_id", "method", "parameters", "inputs", "limits"],
+  "properties": {
+    "contract": {"const": "job/1"},
+    "job_id": {"type": "string", "format": "uuid"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"enum": ["tess-spoc-index", "tess-bls"]},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "parameters": {
+      "description": "Complete parameter set with defaults applied. contracts/methods/<id>/v<version>.schema.json defines the shape.",
+      "type": "object"
+    },
+    "inputs": {
+      "description": "Observations that the job reads. An index job has no observation inputs.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observation_id"],
+        "properties": {
+          "observation_id": {"type": "string", "format": "uuid"}
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_seconds", "maximum_memory_mib"],
+      "properties": {
+        "maximum_seconds": {"type": "integer", "minimum": 1, "maximum": 86400, "x-unit": "s"},
+        "maximum_memory_mib": {"type": "integer", "minimum": 64, "maximum": 65536, "x-unit": "MiB"}
+      }
+    }
+  }
+}

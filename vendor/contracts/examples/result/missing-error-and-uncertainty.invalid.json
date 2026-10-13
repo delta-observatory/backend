@@ -1,0 +1,177 @@
+{
+  "contract": "result/1",
+  "job_id": "8a2d7c41-5b6e-4c3f-8d9a-1e2f3a4b5c6d",
+  "outcome": "failed",
+  "measurements": [
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "period",
+      "value": 0.9413849094310086,
+      "unit": "d",
+      "uncertainty": {
+        "kind": "standard"
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "transit_time",
+      "value": 1354.4595072617192,
+      "unit": "d",
+      "time_scale": "tdb",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Value is a point on the fixed trial grid. BLS reports no uncertainty for it."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "duration",
+      "value": 0.08,
+      "unit": "d",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Value is a point on the fixed trial grid. BLS reports no uncertainty for it."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "depth",
+      "value": 0.00947372300277256,
+      "unit": "1",
+      "uncertainty": {
+        "kind": "standard",
+        "value": 1.4521865740461332e-05
+      },
+      "quality_flags": [
+        "trend_removal_can_reduce_depth"
+      ]
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "depth_snr",
+      "value": 652.3764351006593,
+      "unit": "1",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Formal ratio of depth to its standard error."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "search",
+      "name": "log_likelihood",
+      "value": 232284.0889680832,
+      "unit": "1",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Objective value, not a measured quantity."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "reference_comparison",
+      "name": "relative_period_error",
+      "value": 7.181516598564475e-05,
+      "unit": "1",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Reference period uncertainty is reported separately in diagnostics."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "reference_comparison",
+      "name": "phase_error",
+      "value": 0.0006669935439731489,
+      "unit": "d",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Reference timing uncertainty is reported separately in diagnostics."
+      },
+      "quality_flags": []
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "role": "reference_comparison",
+      "name": "recovered",
+      "value": true,
+      "unit": "1",
+      "uncertainty": {
+        "kind": "unavailable",
+        "reason": "Boolean decision under fixed T01 criteria."
+      },
+      "quality_flags": [
+        "guided_recovery_only"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "kind": "prepared_series",
+      "media_type": "application/vnd.delta.columns+json",
+      "content_encoding": "gzip",
+      "path": "jobs/8a2d7c41-5b6e-4c3f-8d9a-1e2f3a4b5c6d/prepared.json.gz",
+      "bytes": 1,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "kind": "periodogram",
+      "media_type": "application/vnd.delta.columns+json",
+      "content_encoding": "gzip",
+      "path": "jobs/8a2d7c41-5b6e-4c3f-8d9a-1e2f3a4b5c6d/periodogram.json.gz",
+      "bytes": 1,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "observation_id": "0c9e8f7a-6b5d-4c3e-9f2a-1b0c9d8e7f6a",
+      "kind": "search_summary",
+      "media_type": "application/json",
+      "content_encoding": "identity",
+      "path": "jobs/8a2d7c41-5b6e-4c3f-8d9a-1e2f3a4b5c6d/search.json",
+      "bytes": 1,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "diagnostics": {
+    "source": "experiments/tess-known-planet-recovery/results/100100827",
+    "rows": 19737,
+    "retained_rows": 18299,
+    "grid_trials": 35678,
+    "grid_period_min_days": 0.5,
+    "grid_period_max_days": 10.00216,
+    "qualified_observed_events": 28,
+    "reference": {
+      "planet": "WASP-18 b",
+      "period_days": 0.94145252,
+      "source": "experiments/tess-known-planet-recovery/reference/selection.json"
+    },
+    "note": "Artifact sizes and hashes are placeholders in this example."
+  },
+  "resources": {
+    "elapsed_seconds": 3.1,
+    "peak_rss_mib": 420.0
+  },
+  "software": {
+    "worker_version": "example",
+    "python": "3.12.14",
+    "packages": {
+      "astropy": "7.2.0",
+      "lightkurve": "2.5.1",
+      "numpy": "2.4.4",
+      "scipy": "1.17.1"
+    }
+  }
+}

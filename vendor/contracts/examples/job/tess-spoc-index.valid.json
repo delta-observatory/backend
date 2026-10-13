@@ -1,0 +1,17 @@
+{
+  "contract": "job/1",
+  "job_id": "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6e",
+  "run_id": "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+  "method": {
+    "id": "tess-spoc-index",
+    "version": 1
+  },
+  "parameters": {
+    "dataset_id": "tess-spoc-light-curves"
+  },
+  "inputs": [],
+  "limits": {
+    "maximum_seconds": 1800,
+    "maximum_memory_mib": 1024
+  }
+}

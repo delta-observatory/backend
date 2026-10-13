@@ -1,0 +1,29 @@
+{
+  "flux_column": "pdcsap_flux",
+  "minimum_rows": 5000,
+  "minimum_baseline_days": 10,
+  "flatten": {
+    "window_length": 1000,
+    "polyorder": 2,
+    "break_tolerance": 5,
+    "niters": 3,
+    "sigma": 3
+  },
+  "search": {
+    "minimum_period": 0.5,
+    "maximum_period": 10.0,
+    "duration_days": [
+      0.04,
+      0.06,
+      0.08,
+      0.1,
+      0.12,
+      0.16,
+      0.2
+    ],
+    "frequency_factor": 1.0,
+    "oversample": 10,
+    "objective": "chi2",
+    "maximum_grid_trials": 100000
+  }
+}

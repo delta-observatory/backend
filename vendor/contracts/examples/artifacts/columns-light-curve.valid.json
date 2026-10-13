@@ -1,0 +1,10 @@
+{
+  "format": "columns/1",
+  "length": 3,
+  "description": "First three retained rows of a normalized PDCSAP light curve.",
+  "columns": [
+    {"name": "time", "unit": "d", "dtype": "float64", "time_scale": "tdb", "time_reference": "BJD 2457000.0", "values": [1354.1068, 1354.1082, 1354.1096]},
+    {"name": "flux", "unit": "1", "dtype": "float64", "description": "PDCSAP flux divided by its median.", "values": [1.00012, 0.99987, null]},
+    {"name": "quality", "unit": "1", "dtype": "int64", "values": [0, 0, 128]}
+  ]
+}

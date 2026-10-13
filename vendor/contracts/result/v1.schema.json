@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/result/v1.schema.json",
+  "title": "Result document, version 1",
+  "description": "The outcome of one job. A worker writes it to job.result in the same transaction as the measurement and artifact rows.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "job_id",
+    "outcome",
+    "measurements",
+    "artifacts",
+    "diagnostics",
+    "software"
+  ],
+  "properties": {
+    "contract": {
+      "const": "result/1"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "outcome": {
+      "description": "complete: the method ran and produced its outputs. inconclusive: the method ran, but an input or quality condition prevents a usable result. failed: a technical error stopped execution.",
+      "enum": [
+        "complete",
+        "inconclusive",
+        "failed"
+      ]
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/measurement"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "diagnostics": {
+      "description": "Method-specific values that explain the result, such as row counts, grid bounds, and warnings. Diagnostics are not measurements.",
+      "type": "object"
+    },
+    "error": {
+      "description": "Required when outcome is failed or inconclusive.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "traceback": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "elapsed_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "x-unit": "s"
+        },
+        "peak_rss_mib": {
+          "type": "number",
+          "minimum": 0,
+          "x-unit": "MiB"
+        }
+      }
+    },
+    "software": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker_version",
+        "python",
+        "packages"
+      ],
+      "properties": {
+        "worker_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "python": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "failed",
+              "inconclusive"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "error"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "role",
+        "name",
+        "value",
+        "unit",
+        "uncertainty",
+        "quality_flags"
+      ],
+      "properties": {
+        "observation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role": {
+          "description": "search: blind method output. reference_comparison: comparison with a known object after the search output exists.",
+          "enum": [
+            "search",
+            "reference_comparison"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "value": {
+          "type": [
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "unit": {
+          "description": "Unit string. Use \"1\" for a dimensionless value.",
+          "type": "string",
+          "minLength": 1
+        },
+        "time_scale": {
+          "description": "Required when the value is a time.",
+          "enum": [
+            "tdb",
+            "utc",
+            "tt"
+          ]
+        },
+        "time_reference": {
+          "description": "Zero point of a time value, for example \"BJD 2457000.0\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "uncertainty": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "value"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "standard"
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "unavailable"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true
+        }
+      },
+      "dependentRequired": {
+        "time_scale": [
+          "time_reference"
+        ],
+        "time_reference": [
+          "time_scale"
+        ]
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "kind",
+        "media_type",
+        "content_encoding",
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "observation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "kind": {
+          "enum": [
+            "light_curve",
+            "prepared_series",
+            "periodogram",
+            "search_summary",
+            "input_checks"
+          ]
+        },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/vnd.delta.columns+json"
+          ]
+        },
+        "content_encoding": {
+          "description": "gzip: the stored file is gzip-compressed. The API serves it with Content-Encoding: gzip.",
+          "enum": [
+            "identity",
+            "gzip"
+          ]
+        },
+        "path": {
+          "description": "Path relative to the artifact storage root.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

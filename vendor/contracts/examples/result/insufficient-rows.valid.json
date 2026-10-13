@@ -1,0 +1,19 @@
+{
+  "contract": "result/1",
+  "job_id": "8a2d7c41-5b6e-4c3f-8d9a-1e2f3a4b5c6d",
+  "outcome": "inconclusive",
+  "measurements": [],
+  "artifacts": [],
+  "diagnostics": {
+    "retained_rows": 3120
+  },
+  "error": {
+    "kind": "insufficient_rows",
+    "message": "3120 retained rows is less than minimum_rows 5000."
+  },
+  "software": {
+    "worker_version": "example",
+    "python": "3.12.14",
+    "packages": {}
+  }
+}

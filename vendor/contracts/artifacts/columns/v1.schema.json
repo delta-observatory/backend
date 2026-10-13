@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/artifacts/columns/v1.schema.json",
+  "title": "Columnar array artifact, version 1",
+  "description": "Equal-length named arrays with units. Workers write it with media type application/vnd.delta.columns+json. The API serves the file without change. The frontend reads it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "length", "columns"],
+  "properties": {
+    "format": {"const": "columns/1"},
+    "length": {"type": "integer", "minimum": 0},
+    "description": {"type": "string"},
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "unit", "dtype", "values"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "unit": {
+            "description": "Unit string. Use \"1\" for a dimensionless value.",
+            "type": "string",
+            "minLength": 1
+          },
+          "dtype": {"enum": ["float64", "int64", "bool"]},
+          "time_scale": {
+            "description": "Required for a time column.",
+            "enum": ["tdb", "utc", "tt"]
+          },
+          "time_reference": {
+            "description": "The zero point of a time column, for example \"BJD 2457000.0\".",
+            "type": "string"
+          },
+          "description": {"type": "string"},
+          "values": {
+            "description": "Nonfinite floating-point values are null.",
+            "type": "array",
+            "items": {"type": ["number", "boolean", "null"]}
+          }
+        }
+      }
+    }
+  }
+}

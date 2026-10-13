@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/methods/tess-spoc-index/v1.schema.json",
+  "title": "tess-spoc-index parameters, version 1",
+  "description": "Scan raw/<dataset_id>/ for TESS SPOC light-curve files. Read headers, calculate checksums, check the time system, and write observation rows and light-curve preview artifacts. A repeated scan does not duplicate unchanged files.",
+  "x-method": {
+    "kind": "index",
+    "summary": "Index TESS SPOC light-curve files",
+    "scientific_status": "Ingestion only. No scientific calculation."
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dataset_id"],
+  "properties": {
+    "dataset_id": {
+      "description": "Dataset directory name in datasets/ and raw/.",
+      "const": "tess-spoc-light-curves",
+      "default": "tess-spoc-light-curves"
+    }
+  }
+}
