@@ -10,7 +10,7 @@ import json
 import re
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -18,7 +18,8 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import __version__, db, fold as fold_module, query as query_module, settings as settings_module
+from . import __version__, auth, db, fold as fold_module, query as query_module, settings as settings_module
+from .auth import Actor
 from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, DEFAULT_RUN, FOLD_WINDOW, PERIOD_AGREEMENT
 
@@ -76,6 +77,65 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     Conn = Annotated[object, Depends(connection)]
 
+    def authenticate(conn: Conn, authorization: str | None = Header(None, description='Bearer token of the client.')) -> Actor:
+        """The client of the request. Every endpoint except health and the API description needs a valid token."""
+        token = authorization[7:].strip() if authorization and authorization[:7].lower() == 'bearer ' else None
+        actor = auth.lookup(conn, token) if token else None
+        if actor is None:
+            raise HTTPException(401, 'a valid bearer token is required', headers={'WWW-Authenticate': 'Bearer'})
+        return actor
+
+    def need(permission: str):
+        def check(actor: Annotated[Actor, Depends(authenticate)]) -> Actor:
+            if not actor.has(permission):
+                raise HTTPException(403, f'client {actor.name} lacks the permission "{permission}"')
+            return actor
+        return check
+
+    Reader = Annotated[Actor, Depends(need('read'))]
+    Submitter = Annotated[Actor, Depends(need('run.submit'))]
+    Admin = Annotated[Actor, Depends(need('admin'))]
+
+    class ClientRequest(BaseModel):
+        name: str = Field(pattern=r'^[a-z][a-z0-9-]{1,62}$')
+        kind: str = Field(pattern=r'^(person|agent|service)$')
+        permissions: list[str]
+        note: str | None = Field(default=None, max_length=500)
+
+    # Clients ------------------------------------------------------------
+
+    @app.get('/api/me')
+    def me(actor: Annotated[Actor, Depends(authenticate)]):
+        """The client of the token, with its permissions."""
+        return actor.describe()
+
+    @app.get('/api/clients')
+    def list_clients(conn: Conn, _: Admin):
+        return conn.execute("""SELECT id, name, kind, permissions, note, created_by, created_at, disabled_at
+                               FROM client ORDER BY created_at""").fetchall()
+
+    @app.post('/api/clients', status_code=201)
+    def create_client(request: ClientRequest, conn: Conn, actor: Admin):
+        """Create a client. The response holds the token once. The API keeps only its SHA-256."""
+        errors = auth.check_permissions(request.kind, request.permissions)
+        if errors:
+            raise ValidationFailure([{'loc': ['body', 'permissions'], 'msg': m} for m in errors])
+        if conn.execute('SELECT 1 FROM client WHERE name = %s', [request.name]).fetchone():
+            raise HTTPException(409, f'a client named {request.name} exists')
+        row, token = auth.create_client(conn, name=request.name, kind=request.kind, permissions=request.permissions,
+                                        created_by=f'client:{actor.name}', note=request.note)
+        return {**row, 'token': token}
+
+    @app.post('/api/clients/{client_id}/disable')
+    def disable_client(client_id: uuid.UUID, conn: Conn, actor: Admin):
+        if client_id == actor.id:
+            raise HTTPException(409, 'a client cannot disable itself')
+        row = conn.execute("""UPDATE client SET disabled_at = coalesce(disabled_at, now()) WHERE id = %s
+                               RETURNING id, name, disabled_at""", [client_id]).fetchone()
+        if row is None:
+            raise HTTPException(404, 'client not found')
+        return row
+
     # Health and methods ---------------------------------------------------
 
     @app.get('/api/health')
@@ -88,18 +148,18 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 'status': 'unavailable', 'database': 'unavailable', 'error': type(error).__name__})
         return {'status': 'ok', 'database': 'ok', 'version': __version__, 'contracts': contracts.source}
 
-    @app.get('/api/methods')
+    @app.get('/api/methods', dependencies=[Depends(need('read'))])
     def list_methods():
         return [m.describe() for _, m in sorted(contracts.methods.items())]
 
-    @app.get('/api/methods/{method_id}/{version}')
+    @app.get('/api/methods/{method_id}/{version}', dependencies=[Depends(need('read'))])
     def get_method(method_id: str, version: int):
         method = contracts.method(method_id, version)
         if method is None:
             raise HTTPException(404, f'unknown method {method_id} v{version}')
         return method.describe()
 
-    @app.get('/api/rules')
+    @app.get('/api/rules', dependencies=[Depends(need('read'))])
     def list_rules():
         """Named rules that clients apply to stored values: status, default run, query grammar, fold, estimate."""
         return [PERIOD_AGREEMENT.describe(), DEFAULT_RUN.describe(), query_module.describe(),
@@ -107,7 +167,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Datasets -----------------------------------------------------------
 
-    @app.get('/api/datasets')
+    @app.get('/api/datasets', dependencies=[Depends(need('read'))])
     def list_datasets(conn: Conn):
         rows = conn.execute("""
             SELECT d.id, d.state, d.findings, d.last_indexed_at,
@@ -121,7 +181,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return rows
 
     @app.post('/api/datasets/{dataset_id}/index', status_code=202)
-    def index_dataset(dataset_id: str, conn: Conn):
+    def index_dataset(dataset_id: str, conn: Conn, actor: Admin):
         if not re.fullmatch(DATASET_PATTERN, dataset_id):
             raise HTTPException(422, [{'loc': ['path', 'dataset_id'], 'msg': 'invalid dataset id'}])
         method = contracts.method(*INDEX_METHOD)
@@ -132,7 +192,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         try:
             with conn.transaction():
                 conn.execute('INSERT INTO dataset (id) VALUES (%s) ON CONFLICT (id) DO NOTHING', [dataset_id])
-                _insert_run(conn, run_id, method, parameters, None)
+                _insert_run(conn, run_id, method, parameters, None, actor)
                 _insert_job(conn, job_id, run_id, None, document)
         except pg_errors.UniqueViolation:
             active = conn.execute("""
@@ -146,7 +206,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Observations -------------------------------------------------------
 
-    @app.get('/api/observations')
+    @app.get('/api/observations', dependencies=[Depends(need('read'))])
     def list_observations(
         conn: Conn,
         dataset_id: str | None = None,
@@ -173,7 +233,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             LIMIT %s OFFSET %s""", [*args, limit, offset]).fetchall()
         return {'total': total, 'limit': limit, 'offset': offset, 'items': rows}
 
-    @app.get('/api/targets')
+    @app.get('/api/targets', dependencies=[Depends(need('read'))])
     def list_targets(
         conn: Conn,
         run_id: uuid.UUID | None = Query(None, description='Run that supplies the measurements. Without it, measurement fields are null.'),
@@ -250,7 +310,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 'note': None if run_id is not None else 'No run_id: search values, job states, and status are null. Name a run to get them.',
                 'items': rows}
 
-    @app.get('/api/observations/{observation_id}')
+    @app.get('/api/observations/{observation_id}', dependencies=[Depends(need('read'))])
     def get_observation(observation_id: uuid.UUID, conn: Conn):
         row = conn.execute(f'SELECT {OBSERVATION_COLUMNS}, header FROM observation WHERE id = %s',
                            [observation_id]).fetchone()
@@ -288,7 +348,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             raise ValidationFailure(errors)
         return method, parameters, ids
 
-    @app.post('/api/runs/estimate')
+    @app.post('/api/runs/estimate', dependencies=[Depends(need('read'))])
     def estimate_run(request: RunRequest, conn: Conn):
         """Check a run request and estimate its work without a write. A failed check gives the same 422 as POST /runs."""
         method, parameters, ids = prepare_run(request, conn)
@@ -333,7 +393,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return response
 
     @app.post('/api/runs', status_code=201)
-    def create_run(request: RunRequest, conn: Conn):
+    def create_run(request: RunRequest, conn: Conn, actor: Submitter):
         method, parameters, ids = prepare_run(request, conn)
         run_id = str(uuid.uuid4())
         jobs = []
@@ -342,7 +402,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             jobs.append((job_id, o, contracts.job_document(
                 job_id=job_id, run_id=run_id, method=method, parameters=parameters, observation_ids=[o])))
         with conn.transaction():
-            _insert_run(conn, run_id, method, parameters, request.label)
+            _insert_run(conn, run_id, method, parameters, request.label, actor)
             with conn.cursor() as cur:
                 cur.executemany('INSERT INTO run_input (run_id, observation_id) VALUES (%s, %s)',
                                 [(run_id, o) for o in ids])
@@ -350,13 +410,13 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 _insert_job(conn, job_id, run_id, o, document)
         return _run_detail(conn, run_id)
 
-    @app.get('/api/runs')
+    @app.get('/api/runs', dependencies=[Depends(need('read'))])
     def list_runs(conn: Conn, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
         ids = [r['id'] for r in conn.execute('SELECT id FROM run ORDER BY created_at DESC, id LIMIT %s OFFSET %s',
                                              [limit, offset]).fetchall()]
         return _run_summaries(conn, ids)
 
-    @app.get('/api/runs/default')
+    @app.get('/api/runs/default', dependencies=[Depends(need('read'))])
     def default_run(conn: Conn, dataset_id: str | None = None, method_id: str | None = None,
                     method_version: int | None = None):
         """The run that a client shows when it names none (rule default-run/1)."""
@@ -379,11 +439,11 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             raise HTTPException(404, 'no analysis run has a complete job')
         return {'rule': DEFAULT_RUN.id, 'run': _run_summaries(conn, [chosen['id']])[0]}
 
-    @app.get('/api/runs/{run_id}')
+    @app.get('/api/runs/{run_id}', dependencies=[Depends(need('read'))])
     def get_run(run_id: uuid.UUID, conn: Conn):
         return _run_detail(conn, run_id)
 
-    @app.get('/api/runs/{run_id}/results')
+    @app.get('/api/runs/{run_id}/results', dependencies=[Depends(need('read'))])
     def get_run_results(run_id: uuid.UUID, conn: Conn,
                         observation_id: uuid.UUID | None = Query(None, description='Only the job of this observation.')):
         if conn.execute('SELECT 1 FROM run WHERE id = %s', [run_id]).fetchone() is None:
@@ -420,7 +480,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             })
         return {'run_id': run_id, 'jobs': items}
 
-    @app.get('/api/runs/{run_id}/observations/{observation_id}/fold')
+    @app.get('/api/runs/{run_id}/observations/{observation_id}/fold', dependencies=[Depends(need('read'))])
     def get_fold(
         run_id: uuid.UUID, observation_id: uuid.UUID, conn: Conn,
         period: float | None = Query(None, gt=0, description='Fold period in days. Default: the stored BLS period.'),
@@ -466,7 +526,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Jobs ---------------------------------------------------------------
 
-    @app.get('/api/jobs/{job_id}')
+    @app.get('/api/jobs/{job_id}', dependencies=[Depends(need('read'))])
     def get_job(job_id: uuid.UUID, conn: Conn):
         row = conn.execute('SELECT * FROM job WHERE id = %s', [job_id]).fetchone()
         if row is None:
@@ -474,12 +534,16 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return row
 
     @app.post('/api/jobs/{job_id}/cancel')
-    def cancel_job(job_id: uuid.UUID, conn: Conn):
+    def cancel_job(job_id: uuid.UUID, conn: Conn, actor: Submitter):
+        """Cancel a queued job. A client cancels only the jobs of its own runs, unless it has "admin"."""
+        owner = conn.execute('SELECT r.client_id FROM job j JOIN run r ON r.id = j.run_id WHERE j.id = %s', [job_id]).fetchone()
+        if owner is not None and owner['client_id'] != actor.id and not actor.has('admin'):
+            raise HTTPException(403, f'client {actor.name} can cancel only the jobs of its own runs')
         with conn.transaction():
             row = conn.execute("""
-                UPDATE job SET state = 'cancelled', finished_at = now()
+                UPDATE job SET state = 'cancelled', finished_at = now(), cancelled_by = %s
                 WHERE id = %s AND state = 'queued'
-                RETURNING id, state, finished_at""", [job_id]).fetchone()
+                RETURNING id, state, finished_at, cancelled_by""", [actor.id, job_id]).fetchone()
             if row is None:
                 current = conn.execute('SELECT state FROM job WHERE id = %s', [job_id]).fetchone()
                 if current is None:
@@ -509,11 +573,11 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             raise HTTPException(404, 'artifact not found')
         return row
 
-    @app.get('/api/artifacts/{artifact_id}')
+    @app.get('/api/artifacts/{artifact_id}', dependencies=[Depends(need('read'))])
     def get_artifact(artifact_id: uuid.UUID, conn: Conn):
         return db.artifact(_artifact_row(conn, artifact_id))
 
-    @app.get('/api/artifacts/{artifact_id}/content')
+    @app.get('/api/artifacts/{artifact_id}/content', dependencies=[Depends(need('read'))])
     def get_artifact_content(artifact_id: uuid.UUID, request: Request, conn: Conn):
         row = _artifact_row(conn, artifact_id)
         target = artifact_path(row)
@@ -557,7 +621,7 @@ def _run_summaries(conn, ids):
     if not ids:
         return []
     rows = conn.execute("""
-        SELECT r.id, r.method_id, r.method_version, r.label, r.requested_by, r.created_at,
+        SELECT r.id, r.method_id, r.method_version, r.label, r.requested_by, r.client_id, r.created_at,
                r.parameters_sha256,
                (SELECT count(*) FROM run_input i WHERE i.run_id = r.id) AS input_count,
                COALESCE((SELECT jsonb_object_agg(state, n) FROM
@@ -568,11 +632,12 @@ def _run_summaries(conn, ids):
     return [by_id[i] for i in ids if i in by_id]
 
 
-def _insert_run(conn, run_id, method, parameters, label):
+def _insert_run(conn, run_id, method, parameters, label, actor: Actor):
     conn.execute("""
-        INSERT INTO run (id, method_id, method_version, parameters, parameters_sha256, label, requested_by)
-        VALUES (%s, %s, %s, %s, %s, %s, 'api')""",
-                 [run_id, method.id, method.version, Jsonb(parameters), parameters_sha256(parameters), label])
+        INSERT INTO run (id, method_id, method_version, parameters, parameters_sha256, label, requested_by, client_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                 [run_id, method.id, method.version, Jsonb(parameters), parameters_sha256(parameters), label,
+                  f'client:{actor.name}', actor.id])
 
 
 def _insert_job(conn, job_id, run_id, observation_id, document):

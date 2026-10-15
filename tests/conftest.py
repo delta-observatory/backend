@@ -17,11 +17,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from delta_api.app import create_app
+from delta_api.auth import create_client
 from delta_api.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / 'vendor' / 'migrations'
-TABLES = 'measurement, artifact, job, run_input, run, observation, dataset'
+TABLES = 'measurement, artifact, job, run_input, run, observation, dataset, client'
 
 
 @pytest.fixture(scope='session')
@@ -56,8 +57,16 @@ def artifact_root(tmp_path):
 def client(database_url, conn, artifact_root):
     settings = Settings(database_url=database_url, artifact_root=artifact_root,
                         contracts_dir=ROOT / 'vendor' / 'contracts', cors_origins=())
-    with TestClient(create_app(settings)) as test_client:
+    _, token = create_client(conn, name='richard', kind='person', permissions=['read', 'run.submit', 'record.write',
+                             'acquire', 'identity.reveal', 'admin'], created_by='test')
+    with TestClient(create_app(settings), headers={'Authorization': f'Bearer {token}'}) as test_client:
         yield test_client
+
+
+def token_for(conn, name, kind='agent', permissions=('read', 'run.submit', 'record.write')):
+    """Create a client and return headers with its token."""
+    _, token = create_client(conn, name=name, kind=kind, permissions=list(permissions), created_by='test')
+    return {'Authorization': f'Bearer {token}'}
 
 
 def add_observation(conn, *, state='ready', tic=100100827, sector=2, labels=None, header=None, time_start=1354.1, time_stop=1381.5):

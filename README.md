@@ -32,6 +32,32 @@ The API keeps no job, run, or session state in process memory.
 Any replica can serve any request.
 Pool connections use autocommit. Each write transaction commits before the response, so a read just after a write sees it.
 
+## Authentication and permissions
+
+Every endpoint except `GET /health` and the API description needs a bearer token: `Authorization: Bearer <token>`.
+A missing, unknown, or disabled token gives 401. A missing permission gives 403.
+Each token belongs to one client in the `client` table: a person, an agent, or a service. The API stores only the SHA-256 of a token.
+
+| Permission | Allows |
+|---|---|
+| `read` | Every read endpoint, and `POST /runs/estimate`. |
+| `run.submit` | `POST /runs`, and `POST /jobs/{id}/cancel` for the client's own runs. |
+| `record.write` | Research records. No endpoint uses it yet. |
+| `acquire` | Acquisition of new observations. No endpoint uses it yet. |
+| `identity.reveal` | The identity reveal of a campaign. No endpoint uses it yet. |
+| `admin` | Client management, dataset indexing, and cancellation of any job. |
+
+Richard decided that an agent never holds `acquire`, `identity.reveal`, or `admin`. The API and a database constraint both refuse it.
+Each write records its client: `run.client_id` and `run.requested_by` (`client:<name>`), and `job.cancelled_by`.
+
+Create the first client with a command next to the API. It prints the token once:
+
+```bash
+kubectl -n delta-observatory exec deploy/delta-api -- python -m delta_api.admin create-client --name richard --kind person --permissions all
+```
+
+That client creates other clients with `POST /clients`.
+
 ## Client parity
 
 The frontend and research agents use the same API. Each value that the frontend shows, and each rule that it applies, has an API operation.
@@ -59,11 +85,13 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 
 | Method and path | Result |
 |---|---|
-| `GET /health` | Database status. The status code is 503 when the database is unavailable. |
+| `GET /health` | Database status. The status code is 503 when the database is unavailable. No token. |
+| `GET /me` | The client of the token, with its permissions. |
+| `GET /clients`, `POST /clients`, `POST /clients/{id}/disable` | Client management (`admin`). `POST /clients` returns the token once. |
 | `GET /methods` | Every method with its kind, scientific status, parameter schema, and defaults. |
 | `GET /methods/{id}/{version}` | One method. |
 | `GET /datasets` | Datasets with state, findings, last index time, and observation counts by state. |
-| `POST /datasets/{id}/index` | Queues one `tess-spoc-index` job. The status code is 202. A queued or running index job for the dataset gives 409. |
+| `POST /datasets/{id}/index` | Queues one `tess-spoc-index` job (`admin`). The status code is 202. A queued or running index job for the dataset gives 409. |
 | `GET /rules` | The named rules that clients apply. |
 | `GET /observations` | Observations with `ra_deg`, `dec_deg`, and `tmag` from the header. Filters: `dataset_id`, `target_id`, `state`, `class` (matches `labels.class`: `planet_host`, `no_known_planet`, or `eclipsing_binary`), `limit` (at most 1000), `offset`. |
 | `GET /targets` | Ready observations with cadence, sky position, magnitude, labels, the search values of one run, and the `period-agreement/1` status. Filters: `run_id`, `dataset_id`, `class`, `in_run`, and `q` (grammar `target-query/1`). `sort` names an attribute, with `-` for descending order. Default: `-depth_snr`. Null values sort last. `limit` (at most 5000), `offset`. A query error gives 422. Without `run_id`, the search values and the status are null, `run_values` is false, and a filter or sort on a run field gives 422. |
@@ -76,7 +104,7 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /runs/{id}/results` | Measurements by role, artifacts, diagnostics, resources, and software for each job. `observation_id` limits the response to one job. |
 | `GET /runs/{id}/observations/{observation_id}/fold` | The stored flattened flux folded and binned (rule `fold-window/1`). Defaults: the stored BLS period and transit time. Options: `period`, `t0`, `window_hours`, `bin_hours`, `t_min`, `t_max`, and `points`. The box model shows only for the stored ephemeris. |
 | `GET /jobs/{id}` | One job with its job and result documents. |
-| `POST /jobs/{id}/cancel` | Cancels a queued job. Another state gives 409. |
+| `POST /jobs/{id}/cancel` | Cancels a queued job of the client's own run, or any queued job with `admin`. Another state gives 409. |
 | `GET /artifacts/{id}` | Artifact metadata. |
 | `GET /artifacts/{id}/content` | The stored file. A `gzip` artifact has `Content-Encoding: gzip`. The ETag is the SHA-256. |
 
@@ -115,6 +143,7 @@ A time value also has `time_scale` and `time_reference`.
 
 The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
+`test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
 `test_rules.py` checks the rules against `tests/vectors/`. `test_parity_api.py` checks the client-parity endpoints, including the SQL form of the target query against the vectors.
 
 ```bash
