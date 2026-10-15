@@ -1,0 +1,89 @@
+{
+ "rule": "period-agreement/1",
+ "cases": [
+  {
+   "label_class": "eclipsing_binary",
+   "depth_snr": 140.0,
+   "relative_period_error": null,
+   "status": "eb",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "no_known_planet",
+   "depth_snr": 1143.0,
+   "relative_period_error": null,
+   "status": "signal",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "no_known_planet",
+   "depth_snr": 100.0,
+   "relative_period_error": null,
+   "status": "quiet",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "no_known_planet",
+   "depth_snr": null,
+   "relative_period_error": null,
+   "status": "quiet",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 652.0,
+   "relative_period_error": 7.2e-05,
+   "status": "match",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 40.0,
+   "relative_period_error": 0.0099999,
+   "status": "match",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 40.0,
+   "relative_period_error": 0.01,
+   "status": "near",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 40.0,
+   "relative_period_error": 0.0499,
+   "status": "near",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 40.0,
+   "relative_period_error": 0.05,
+   "status": "miss",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": 40.0,
+   "relative_period_error": 0.9,
+   "status": "miss",
+   "status_without_labels": null
+  },
+  {
+   "label_class": "planet_host",
+   "depth_snr": null,
+   "relative_period_error": null,
+   "status": "quiet",
+   "status_without_labels": null
+  },
+  {
+   "label_class": null,
+   "depth_snr": 300.0,
+   "relative_period_error": null,
+   "status": "quiet",
+   "status_without_labels": null
+  }
+ ]
+}

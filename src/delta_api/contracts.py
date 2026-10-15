@@ -12,6 +12,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from . import constraints
+
 # Resource limits that the API writes into each job document.
 LIMITS = {
     'tess-bls': {'maximum_seconds': 600, 'maximum_memory_mib': 2048},
@@ -92,16 +94,7 @@ def _errors(validator: Draft202012Validator, document: Any, prefix: tuple) -> li
 
 def check_constraints(method: Method, parameters: dict) -> list[dict]:
     """Check the x-constraints rules that JSON Schema cannot express."""
-    errors = []
-    if method.id == 'tess-bls':
-        search = parameters['search']
-        if not search['minimum_period'] < search['maximum_period']:
-            errors.append({'loc': ['parameters', 'search', 'maximum_period'],
-                           'msg': 'search.minimum_period must be less than search.maximum_period'})
-        if not max(search['duration_days']) < search['minimum_period']:
-            errors.append({'loc': ['parameters', 'search', 'duration_days'],
-                           'msg': 'max(search.duration_days) must be less than search.minimum_period'})
-    return errors
+    return constraints.failed(method.schema.get('x-constraints', []), parameters)
 
 
 class Contracts:

@@ -60,7 +60,7 @@ def client(database_url, conn, artifact_root):
         yield test_client
 
 
-def add_observation(conn, *, state='ready', tic=100100827, sector=2, labels=None):
+def add_observation(conn, *, state='ready', tic=100100827, sector=2, labels=None, header=None, time_start=1354.1, time_stop=1381.5):
     """Insert a dataset (if absent) and one observation row. Return its id."""
     conn.execute("INSERT INTO dataset (id, state) VALUES ('tess-spoc-light-curves', 'ready') "
                  'ON CONFLICT DO NOTHING')
@@ -68,10 +68,11 @@ def add_observation(conn, *, state='ready', tic=100100827, sector=2, labels=None
     digest = hashlib.sha256(oid.bytes).hexdigest()
     conn.execute("""
         INSERT INTO observation (id, dataset_id, product_type, relative_path, bytes, sha256, target_id,
-            sector, cadence_seconds, time_start, time_stop, time_scale, time_reference, row_count, labels, state)
+            sector, cadence_seconds, time_start, time_stop, time_scale, time_reference, row_count, header, labels, state)
         VALUES (%s, 'tess-spoc-light-curves', 'tess_spoc_light_curve', %s, 2000000, %s, %s, %s, 120,
-            1354.1, 1381.5, 'tdb', 'BJD 2457000.0', 18000, %s, %s)""",
-                 [oid, f'{oid}.fits', digest, f'TIC:{tic}', sector, Jsonb(labels or {}), state])
+            %s, %s, 'tdb', 'BJD 2457000.0', 18000, %s, %s, %s)""",
+                 [oid, f'{oid}.fits', digest, f'TIC:{tic}', sector, time_start, time_stop,
+                  Jsonb(header or {}), Jsonb(labels or {}), state])
     return oid
 
 
@@ -117,3 +118,36 @@ def add_finished_job(conn, artifact_root, observation_id, *, payload=b'{"format"
         RETURNING id""", [job_id, observation_id, path, len(compressed),
                           hashlib.sha256(compressed).hexdigest()]).fetchone()['id']
     return run_id, job_id, artifact_id
+
+
+def add_run(conn, *, label=None, created_at='2026-10-13T00:00:00Z'):
+    """Insert an analysis run with no inputs. Return its id."""
+    run_id = uuid.uuid4()
+    conn.execute("INSERT INTO run (id, method_id, method_version, parameters, parameters_sha256, label, requested_by, created_at) "
+                 "VALUES (%s, 'tess-bls', 1, '{}', %s, %s, 'test', %s)", [run_id, '0' * 64, label, created_at])
+    return run_id
+
+
+def add_job(conn, run_id, observation_id, *, state='complete', measurements=(), result=None, artifacts=()):
+    """Insert one job with search measurements (role, name, value) and artifact files (kind, json document)."""
+    job_id = uuid.uuid4()
+    document = {'contract': 'job/1', 'job_id': str(job_id), 'run_id': str(run_id),
+                'method': {'id': 'tess-bls', 'version': 1}, 'parameters': {},
+                'inputs': [{'observation_id': str(observation_id)}],
+                'limits': {'maximum_seconds': 600, 'maximum_memory_mib': 2048}}
+    finished = state in ('complete', 'inconclusive', 'failed')
+    result = result if result is not None else ({'contract': 'result/1', 'job_id': str(job_id), 'outcome': state,
+                                                 'measurements': [], 'artifacts': []} if finished else None)
+    conn.execute('INSERT INTO run_input VALUES (%s, %s) ON CONFLICT DO NOTHING', [run_id, observation_id])
+    conn.execute("""INSERT INTO job (id, run_id, observation_id, document, state, attempts, result, finished_at,
+                        lease_expires_at)
+                    VALUES (%s, %s, %s, %s, %s, 1, %s, CASE WHEN %s THEN now() END,
+                            CASE WHEN %s = 'running' THEN now() + interval '1 minute' END)""",
+                 [job_id, run_id, observation_id, Jsonb(document), state, Jsonb(result) if result else None,
+                  finished, state])
+    for role, name, value in measurements:
+        conn.execute("""INSERT INTO measurement (job_id, observation_id, role, name, value_number, unit,
+                            uncertainty_kind, uncertainty_reason)
+                        VALUES (%s, %s, %s, %s, %s, '1', 'unavailable', 'test')""",
+                     [job_id, observation_id, role, name, value])
+    return job_id

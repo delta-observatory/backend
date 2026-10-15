@@ -5,6 +5,8 @@ It never calls a worker. Workers claim the jobs that the API inserts.
 """
 from contextlib import asynccontextmanager
 from typing import Annotated
+import gzip
+import json
 import re
 import uuid
 
@@ -16,8 +18,9 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import __version__, db, settings as settings_module
+from . import __version__, db, fold as fold_module, query as query_module, settings as settings_module
 from .contracts import Contracts, ValidationFailure, parameters_sha256
+from .rules import BLS_GRID, DEFAULT_RUN, FOLD_WINDOW, PERIOD_AGREEMENT
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
 INDEX_METHOD = ('tess-spoc-index', 1)
@@ -96,6 +99,12 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             raise HTTPException(404, f'unknown method {method_id} v{version}')
         return method.describe()
 
+    @app.get('/api/rules')
+    def list_rules():
+        """Named rules that clients apply to stored values: status, default run, query grammar, fold, estimate."""
+        return [PERIOD_AGREEMENT.describe(), DEFAULT_RUN.describe(), query_module.describe(),
+                FOLD_WINDOW.describe(), BLS_GRID.describe()]
+
     # Datasets -----------------------------------------------------------
 
     @app.get('/api/datasets')
@@ -159,10 +168,74 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         clause = ('WHERE ' + ' AND '.join(where)) if where else ''
         total = conn.execute(f'SELECT count(*) AS n FROM observation {clause}', args).fetchone()['n']
         rows = conn.execute(f"""
-            SELECT {OBSERVATION_COLUMNS} FROM observation {clause}
+            SELECT {OBSERVATION_COLUMNS}, {SKY_COLUMNS} FROM observation {clause}
             ORDER BY dataset_id, target_id, sector NULLS LAST, id
             LIMIT %s OFFSET %s""", [*args, limit, offset]).fetchall()
         return {'total': total, 'limit': limit, 'offset': offset, 'items': rows}
+
+    @app.get('/api/targets')
+    def list_targets(
+        conn: Conn,
+        run_id: uuid.UUID | None = Query(None, description='Run that supplies the measurements. Without it, measurement fields are null.'),
+        dataset_id: str | None = None,
+        q: str = Query('', description=f'Query in grammar {query_module.GRAMMAR}. GET /api/rules describes it.'),
+        label_class: str | None = Query(None, alias='class', description='Label class: planet_host, no_known_planet, or eclipsing_binary.'),
+        in_run: bool = Query(False, description='Only the observations that are inputs of the run.'),
+        sort: str = Query('-depth_snr', description='A target attribute, with "-" for descending order. Null values sort last.'),
+        limit: int = Query(1000, ge=1, le=5000),
+        offset: int = Query(0, ge=0),
+    ):
+        """Ready observations with sky position, magnitude, labels, the run's search values, and a display status."""
+        labels_visible = True  # A later blind-campaign policy sets this per client.
+        parsed = query_module.parse(q)
+        errors = [{'loc': ['query', 'q'], 'msg': m} for m in parsed.errors]
+        if not labels_visible:
+            errors += [{'loc': ['query', 'q'], 'msg': f'field "{t.field}" needs known-object labels'}
+                       for t in parsed.terms if isinstance(t, query_module.Comparison) and t.field in query_module.LABEL_FIELDS]
+        key = sort.removeprefix('-')
+        if key not in TARGET_ATTRIBUTES:
+            errors.append({'loc': ['query', 'sort'], 'msg': f'unknown attribute "{key}"'})
+        if errors:
+            raise ValidationFailure(errors)
+        where, args = ["o.state = 'ready'"], []
+        if dataset_id is not None:
+            where.append('o.dataset_id = %s'); args.append(dataset_id)
+        if label_class is not None:
+            where.append("o.labels ->> 'class' = %s"); args.append(label_class)
+        if in_run:
+            where.append('EXISTS (SELECT 1 FROM run_input ri WHERE ri.run_id = %s AND ri.observation_id = o.id)')
+            args.append(run_id)
+        q_where, q_args = query_module.to_sql(parsed, {a: a for a in TARGET_ATTRIBUTES})
+        base = f"""
+            WITH t AS (
+                SELECT o.id AS observation_id, o.dataset_id, o.target_id, o.sector, {SKY_COLUMNS},
+                       o.labels ->> 'class' AS label_class,
+                       o.labels -> 'planets' -> 0 ->> 'name' AS planet_name,
+                       {_json_number("o.labels -> 'planets' -> 0 -> 'period_days'")} AS reference_period_days,
+                       j.id AS job_id, j.state AS job_state, j.result ->> 'outcome' AS outcome,
+                       m.period_days, m.depth, m.depth_snr, m.relative_period_error
+                FROM observation o
+                LEFT JOIN job j ON j.observation_id = o.id AND j.run_id = %s
+                LEFT JOIN LATERAL (
+                    SELECT max(value_number) FILTER (WHERE role = 'search' AND name = 'period') AS period_days,
+                           max(value_number) FILTER (WHERE role = 'search' AND name = 'depth') AS depth,
+                           max(value_number) FILTER (WHERE role = 'search' AND name = 'depth_snr') AS depth_snr,
+                           max(value_number) FILTER (WHERE role = 'reference_comparison'
+                                                     AND name = 'relative_period_error') AS relative_period_error
+                    FROM measurement WHERE job_id = j.id) m ON true
+                WHERE {' AND '.join(where)})
+            SELECT * FROM t {('WHERE ' + ' AND '.join(q_where)) if q_where else ''}"""
+        all_args = [run_id, *args, *q_args]
+        total = conn.execute(f'SELECT count(*) AS n FROM ({base}) c', all_args).fetchone()['n']
+        direction = 'DESC' if sort.startswith('-') else 'ASC'
+        rows = conn.execute(f"""{base}
+            ORDER BY {key} {direction} NULLS LAST, target_id, sector NULLS LAST, observation_id
+            LIMIT %s OFFSET %s""", [*all_args, limit, offset]).fetchall()
+        for row in rows:
+            row['status'] = PERIOD_AGREEMENT.status(row['label_class'], row['depth_snr'], row['relative_period_error'],
+                                                    labels_visible)
+        return {'total': total, 'limit': limit, 'offset': offset, 'run_id': run_id, 'grammar': query_module.GRAMMAR,
+                'status_rule': PERIOD_AGREEMENT.id, 'labels_visible': labels_visible, 'units': TARGET_UNITS, 'items': rows}
 
     @app.get('/api/observations/{observation_id}')
     def get_observation(observation_id: uuid.UUID, conn: Conn):
@@ -178,8 +251,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Runs ---------------------------------------------------------------
 
-    @app.post('/api/runs', status_code=201)
-    def create_run(request: RunRequest, conn: Conn):
+    def prepare_run(request: RunRequest, conn):
+        """Check a run request as POST /runs does. Return the method, the full parameters, and the inputs."""
         method = contracts.method(request.method.id, request.method.version)
         if method is None:
             raise ValidationFailure([{'loc': ['method'], 'msg':
@@ -200,6 +273,55 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 errors.append({'loc': ['observation_ids', i], 'msg': f'observation state is {states[o]}, not ready'})
         if errors:
             raise ValidationFailure(errors)
+        return method, parameters, ids
+
+    @app.post('/api/runs/estimate')
+    def estimate_run(request: RunRequest, conn: Conn):
+        """Check a run request and estimate its work without a write. A failed check gives the same 422 as POST /runs."""
+        method, parameters, ids = prepare_run(request, conn)
+        response = {'method': {'id': method.id, 'version': method.version}, 'parameters': parameters,
+                    'observation_count': len(ids), 'estimate': None, 'estimate_reason': None}
+        if method.id != 'tess-bls':
+            response['estimate_reason'] = f'no workload estimate for {method.id}'
+            return response
+        search = parameters['search']
+        spans = {str(r['id']): (r['time_stop'] - r['time_start']) if r['time_start'] is not None and r['time_stop'] is not None else None
+                 for r in conn.execute('SELECT id, time_start, time_stop FROM observation WHERE id = ANY(%s)', [ids]).fetchall()}
+        limit = search['maximum_grid_trials']
+        items = []
+        for o in ids:
+            n = BLS_GRID.trials(spans[o], search['minimum_period'], search['maximum_period'],
+                                search['duration_days'], search['frequency_factor']) if spans[o] else None
+            items.append({'observation_id': o, 'baseline_days': spans[o], 'trials': n,
+                          'over_limit': n is not None and n > limit})
+        known = [i['trials'] for i in items if i['trials'] is not None]
+        rate = conn.execute("""
+            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY seconds_per_trial) AS median, count(*) AS jobs
+            FROM (SELECT (result -> 'resources' ->> 'elapsed_seconds')::float8
+                         / NULLIF((result -> 'diagnostics' ->> 'grid_trials')::float8, 0) AS seconds_per_trial
+                  FROM job
+                  WHERE state = 'complete' AND document -> 'method' ->> 'id' = %s
+                    AND (document -> 'method' ->> 'version')::int = %s
+                    AND jsonb_typeof(result -> 'resources' -> 'elapsed_seconds') = 'number'
+                    AND jsonb_typeof(result -> 'diagnostics' -> 'grid_trials') = 'number'
+                  ORDER BY finished_at DESC NULLS LAST LIMIT 200) s""", [method.id, method.version]).fetchone()
+        per_trial = rate['median'] if rate and rate['jobs'] else None
+        response['estimate'] = {
+            'rule': BLS_GRID.id,
+            'trials': {'min': min(known), 'max': max(known), 'total': sum(known)} if known else None,
+            'limit': limit,
+            'over_limit': sum(1 for i in items if i['over_limit']),
+            'seconds_per_trial': {'median': per_trial, 'jobs': rate['jobs'],
+                                  'source': 'median of elapsed_seconds / diagnostics.grid_trials over the newest '
+                                            '200 complete jobs of the method'} if per_trial is not None else None,
+            'worker_seconds': per_trial * sum(known) if per_trial is not None and known else None,
+            'items': items,
+        }
+        return response
+
+    @app.post('/api/runs', status_code=201)
+    def create_run(request: RunRequest, conn: Conn):
+        method, parameters, ids = prepare_run(request, conn)
         run_id = str(uuid.uuid4())
         jobs = []
         for o in ids:
@@ -217,33 +339,53 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     @app.get('/api/runs')
     def list_runs(conn: Conn, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
-        rows = conn.execute("""
-            SELECT r.id, r.method_id, r.method_version, r.label, r.requested_by, r.created_at,
-                   r.parameters_sha256,
-                   (SELECT count(*) FROM run_input i WHERE i.run_id = r.id) AS input_count,
-                   COALESCE((SELECT jsonb_object_agg(state, n) FROM
-                       (SELECT state, count(*) AS n FROM job j WHERE j.run_id = r.id GROUP BY state) s),
-                       '{}'::jsonb) AS job_states
-            FROM run r ORDER BY r.created_at DESC, r.id LIMIT %s OFFSET %s""", [limit, offset]).fetchall()
-        return rows
+        ids = [r['id'] for r in conn.execute('SELECT id FROM run ORDER BY created_at DESC, id LIMIT %s OFFSET %s',
+                                             [limit, offset]).fetchall()]
+        return _run_summaries(conn, ids)
+
+    @app.get('/api/runs/default')
+    def default_run(conn: Conn, dataset_id: str | None = None, method_id: str | None = None,
+                    method_version: int | None = None):
+        """The run that a client shows when it names none (rule default-run/1)."""
+        analysis = [key for key, m in contracts.methods.items() if m.kind == 'analysis'
+                    and (method_id is None or key[0] == method_id) and (method_version is None or key[1] == method_version)]
+        if not analysis:
+            raise HTTPException(404, 'no analysis method matches')
+        where, args = ['(r.method_id, r.method_version) IN (SELECT * FROM unnest(%s::text[], %s::int[]))'], \
+            [[k[0] for k in analysis], [k[1] for k in analysis]]
+        if dataset_id is not None:
+            where.append("""EXISTS (SELECT 1 FROM run_input ri JOIN observation o ON o.id = ri.observation_id
+                                   WHERE ri.run_id = r.id AND o.dataset_id = %s)""")
+            args.append(dataset_id)
+        candidates = conn.execute(f"""
+            SELECT r.id, r.created_at,
+                   (SELECT count(*) FROM job j WHERE j.run_id = r.id AND j.state = 'complete') AS complete
+            FROM run r WHERE {' AND '.join(where)}""", args).fetchall()
+        chosen = DEFAULT_RUN.choose(candidates)
+        if chosen is None:
+            raise HTTPException(404, 'no analysis run has a complete job')
+        return {'rule': DEFAULT_RUN.id, 'run': _run_summaries(conn, [chosen['id']])[0]}
 
     @app.get('/api/runs/{run_id}')
     def get_run(run_id: uuid.UUID, conn: Conn):
         return _run_detail(conn, run_id)
 
     @app.get('/api/runs/{run_id}/results')
-    def get_run_results(run_id: uuid.UUID, conn: Conn):
+    def get_run_results(run_id: uuid.UUID, conn: Conn,
+                        observation_id: uuid.UUID | None = Query(None, description='Only the job of this observation.')):
         if conn.execute('SELECT 1 FROM run WHERE id = %s', [run_id]).fetchone() is None:
             raise HTTPException(404, 'run not found')
-        jobs = conn.execute("""
-            SELECT id, observation_id, state, result FROM job WHERE run_id = %s
-            ORDER BY created_at, id""", [run_id]).fetchall()
-        measurements = conn.execute("""
+        only = 'AND j.observation_id = %s' if observation_id else ''
+        extra = [observation_id] if observation_id else []
+        jobs = conn.execute(f"""
+            SELECT id, observation_id, state, result FROM job j WHERE run_id = %s {only}
+            ORDER BY created_at, id""", [run_id, *extra]).fetchall()
+        measurements = conn.execute(f"""
             SELECT m.* FROM measurement m JOIN job j ON j.id = m.job_id
-            WHERE j.run_id = %s ORDER BY m.id""", [run_id]).fetchall()
-        artifacts = conn.execute("""
+            WHERE j.run_id = %s {only} ORDER BY m.id""", [run_id, *extra]).fetchall()
+        artifacts = conn.execute(f"""
             SELECT a.* FROM artifact a JOIN job j ON j.id = a.job_id
-            WHERE j.run_id = %s ORDER BY a.created_at, a.id""", [run_id]).fetchall()
+            WHERE j.run_id = %s {only} ORDER BY a.created_at, a.id""", [run_id, *extra]).fetchall()
         items = []
         for job in jobs:
             result = job['result'] or {}
@@ -264,6 +406,50 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 'software': result.get('software'),
             })
         return {'run_id': run_id, 'jobs': items}
+
+    @app.get('/api/runs/{run_id}/observations/{observation_id}/fold')
+    def get_fold(
+        run_id: uuid.UUID, observation_id: uuid.UUID, conn: Conn,
+        period: float | None = Query(None, gt=0, description='Fold period in days. Default: the stored BLS period.'),
+        t0: float | None = Query(None, description='Event time, BTJD (TDB). Default: the stored BLS transit time.'),
+        window_hours: float | None = Query(None, gt=0, description='Half width of the window. Default: rule fold-window/1.'),
+        bin_hours: float | None = Query(None, gt=0, description='Bin width. Default: rule fold-window/1.'),
+        t_min: float | None = Query(None, description='Use only times at or after this BTJD.'),
+        t_max: float | None = Query(None, description='Use only times at or before this BTJD.'),
+        points: bool = Query(False, description='Include the folded points.'),
+    ):
+        """Fold the stored flattened flux and bin it. A display calculation, not a stored result."""
+        job = conn.execute('SELECT id, state FROM job WHERE run_id = %s AND observation_id = %s',
+                           [run_id, observation_id]).fetchone()
+        if job is None:
+            raise HTTPException(404, 'the run has no job for this observation')
+        rows = {a['kind']: a for a in conn.execute(
+            "SELECT * FROM artifact WHERE job_id = %s AND kind IN ('prepared_series', 'search_summary')", [job['id']]).fetchall()}
+        if set(rows) != {'prepared_series', 'search_summary'}:
+            raise HTTPException(409, f"job state is {job['state']}; the fold needs its prepared series and search summary")
+        best = read_artifact_json(rows['search_summary'])['best']
+        columns = {c['name']: c['values'] for c in read_artifact_json(rows['prepared_series'])['columns']}
+        stored = period is None and t0 is None
+        p = period if period is not None else best['period']
+        epoch = t0 if t0 is not None else best['transit_time']
+        window = window_hours if window_hours is not None else FOLD_WINDOW.window_hours(best['duration'], p)
+        width = bin_hours if bin_hours is not None else FOLD_WINDOW.bin_hours(window)
+        time_range = None if t_min is None and t_max is None else \
+            (t_min if t_min is not None else float('-inf'), t_max if t_max is not None else float('inf'))
+        xs, ys = fold_module.fold(columns['time'], columns['flattened_flux'], epoch, p, window, time_range)
+        result = {
+            'run_id': run_id, 'observation_id': observation_id, 'job_id': job['id'], 'rule': FOLD_WINDOW.id,
+            'display_calculation': True, 'stored_ephemeris': stored,
+            'period_days': p, 't0': epoch, 'time_scale': 'tdb', 'time_reference': 'BJD 2457000.0',
+            'window_hours': window, 'bin_hours': width, 'time_range': time_range and [t_min, t_max],
+            'flux_column': 'flattened_flux', 'flux_unit': '1', 'n_points': len(xs),
+            'bins': fold_module.bins(xs, ys, window, width),
+            # The box model belongs to the stored BLS result only.
+            'box_model': {'depth': best['depth'], 'duration_hours': best['duration'] * 24} if stored else None,
+        }
+        if points:
+            result['points'] = {'x_hours': xs, 'flux': ys}
+        return result
 
     # Jobs ---------------------------------------------------------------
 
@@ -290,6 +476,20 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Artifacts ----------------------------------------------------------
 
+    def artifact_path(row):
+        root = config.artifact_root.resolve()
+        target = (root / row['path']).resolve()
+        if not target.is_relative_to(root) or target == root:
+            raise HTTPException(400, 'artifact path is outside the artifact root')
+        return target
+
+    def read_artifact_json(row):
+        target = artifact_path(row)
+        if not target.is_file():
+            raise HTTPException(404, 'artifact file is missing')
+        data = target.read_bytes()
+        return json.loads(gzip.decompress(data) if row['content_encoding'] == 'gzip' else data)
+
     def _artifact_row(conn, artifact_id):
         row = conn.execute('SELECT * FROM artifact WHERE id = %s', [artifact_id]).fetchone()
         if row is None:
@@ -303,10 +503,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     @app.get('/api/artifacts/{artifact_id}/content')
     def get_artifact_content(artifact_id: uuid.UUID, request: Request, conn: Conn):
         row = _artifact_row(conn, artifact_id)
-        root = config.artifact_root.resolve()
-        target = (root / row['path']).resolve()
-        if not target.is_relative_to(root) or target == root:
-            raise HTTPException(400, 'artifact path is outside the artifact root')
+        target = artifact_path(row)
         etag = f'"{row["sha256"]}"'
         headers = {'ETag': etag, 'Cache-Control': 'public, max-age=31536000, immutable'}
         if row['content_encoding'] == 'gzip':
@@ -323,6 +520,38 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 OBSERVATION_COLUMNS = """id, dataset_id, product_type, relative_path, bytes, sha256, target_id, sector,
     cadence_seconds, time_start, time_stop, time_scale, time_reference, row_count, labels, state,
     findings, first_indexed_at, last_seen_at"""
+
+
+def _json_number(expression: str) -> str:
+    """A JSON value as double precision, or null when it is not a number."""
+    return f"CASE WHEN jsonb_typeof({expression}) = 'number' THEN ({expression})::text::float8 END"
+
+
+# Sky position (ICRS, from the SPOC header keywords RA_OBJ and DEC_OBJ) and TESS magnitude.
+SKY_COLUMNS = ', '.join(f"{_json_number(f'header -> {key!r}')} AS {name}"
+                        for key, name in (('RA_OBJ', 'ra_deg'), ('DEC_OBJ', 'dec_deg'), ('TESSMAG', 'tmag')))
+
+TARGET_UNITS = {'ra_deg': 'deg', 'dec_deg': 'deg', 'tmag': 'mag', 'reference_period_days': 'd', 'period_days': 'd',
+                'depth': '1', 'depth_snr': '1', 'relative_period_error': '1'}
+TARGET_ATTRIBUTES = ('observation_id', 'dataset_id', 'target_id', 'sector', 'ra_deg', 'dec_deg', 'tmag', 'label_class',
+                     'planet_name', 'reference_period_days', 'job_state', 'outcome', 'period_days', 'depth',
+                     'depth_snr', 'relative_period_error')
+
+
+def _run_summaries(conn, ids):
+    """Run summaries in the order of ids, with input counts and job states."""
+    if not ids:
+        return []
+    rows = conn.execute("""
+        SELECT r.id, r.method_id, r.method_version, r.label, r.requested_by, r.created_at,
+               r.parameters_sha256,
+               (SELECT count(*) FROM run_input i WHERE i.run_id = r.id) AS input_count,
+               COALESCE((SELECT jsonb_object_agg(state, n) FROM
+                   (SELECT state, count(*) AS n FROM job j WHERE j.run_id = r.id GROUP BY state) s),
+                   '{}'::jsonb) AS job_states
+        FROM run r WHERE r.id = ANY(%s)""", [ids]).fetchall()
+    by_id = {r['id']: r for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def _insert_run(conn, run_id, method, parameters, label):

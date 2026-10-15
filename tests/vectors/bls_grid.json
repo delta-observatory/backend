@@ -1,0 +1,102 @@
+{
+ "rule": "bls-grid/1",
+ "cases": [
+  {
+   "baseline_days": 27.406,
+   "minimum_period": 0.5,
+   "maximum_period": 10,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 1,
+   "trials": 35677
+  },
+  {
+   "baseline_days": 27.406,
+   "minimum_period": 0.5,
+   "maximum_period": 20,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 1,
+   "trials": 36616
+  },
+  {
+   "baseline_days": 27.406,
+   "minimum_period": 0.5,
+   "maximum_period": 10,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 0.5,
+   "trials": 71354
+  },
+  {
+   "baseline_days": 54.8,
+   "minimum_period": 0.5,
+   "maximum_period": 10,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 1,
+   "trials": 142645
+  },
+  {
+   "baseline_days": 27.406,
+   "minimum_period": 2,
+   "maximum_period": 1,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 1,
+   "trials": null
+  },
+  {
+   "baseline_days": 0,
+   "minimum_period": 0.5,
+   "maximum_period": 10,
+   "duration_days": [
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.12,
+    0.16,
+    0.2
+   ],
+   "frequency_factor": 1,
+   "trials": null
+  }
+ ],
+ "note": "Run e0534db5 recorded 35678 trials for WASP-18 b, baseline 27.406 d, T01 defaults."
+}

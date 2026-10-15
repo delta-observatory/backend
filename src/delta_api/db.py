@@ -9,7 +9,10 @@ def make_pool(database_url: str) -> ConnectionPool:
         min_size=1,
         max_size=10,
         open=False,
-        kwargs={'row_factory': dict_row},
+        # Autocommit: each 'with conn.transaction()' block is a real transaction that commits
+        # before the response. Without it, the block is a savepoint, and the commit waits for the
+        # end of the request, so a client can read the old state just after a write.
+        kwargs={'row_factory': dict_row, 'autocommit': True},
         name='delta-api',
     )
 

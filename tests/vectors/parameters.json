@@ -1,0 +1,179 @@
+{
+ "method": {
+  "id": "tess-bls",
+  "version": 1
+ },
+ "cases": [
+  {
+   "override": {},
+   "schema_paths": [],
+   "rules": []
+  },
+  {
+   "override": {
+    "flatten": {
+     "window_length": 1000
+    }
+   },
+   "schema_paths": [
+    "flatten.window_length"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "flatten": {
+     "window_length": 5
+    }
+   },
+   "schema_paths": [
+    "flatten.window_length"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "flatten": {
+     "window_length": 1001.5
+    }
+   },
+   "schema_paths": [
+    "flatten.window_length"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "minimum_period": 12
+    }
+   },
+   "schema_paths": [],
+   "rules": [
+    "search.minimum_period < search.maximum_period"
+   ]
+  },
+  {
+   "override": {
+    "search": {
+     "minimum_period": 0.1
+    }
+   },
+   "schema_paths": [],
+   "rules": [
+    "max(search.duration_days) < search.minimum_period"
+   ]
+  },
+  {
+   "override": {
+    "search": {
+     "maximum_period": 0.4
+    }
+   },
+   "schema_paths": [],
+   "rules": [
+    "search.minimum_period < search.maximum_period"
+   ]
+  },
+  {
+   "override": {
+    "search": {
+     "duration_days": [
+      0.1,
+      0.1
+     ]
+    }
+   },
+   "schema_paths": [
+    "search.duration_days"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "duration_days": []
+    }
+   },
+   "schema_paths": [
+    "search.duration_days"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "duration_days": [
+      3
+     ]
+    }
+   },
+   "schema_paths": [
+    "search.duration_days.0"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "objective": "chi2"
+    }
+   },
+   "schema_paths": [
+    "search.objective"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "flux_column": "kspsap"
+   },
+   "schema_paths": [
+    "flux_column"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "minimum_rows": 99
+   },
+   "schema_paths": [
+    "minimum_rows"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "frequency_factor": 0.01
+    }
+   },
+   "schema_paths": [
+    "search.frequency_factor"
+   ],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "maximum_period": 20
+    }
+   },
+   "schema_paths": [],
+   "rules": []
+  },
+  {
+   "override": {
+    "search": {
+     "minimum_period": 0,
+     "maximum_period": 101
+    }
+   },
+   "schema_paths": [
+    "search.maximum_period",
+    "search.minimum_period"
+   ],
+   "rules": []
+  }
+ ]
+}

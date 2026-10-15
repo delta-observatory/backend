@@ -1,0 +1,49 @@
+{
+ "rule": "default-run/1",
+ "cases": [
+  {
+   "runs": [
+    {
+     "id": "old",
+     "created_at": "2026-10-12T02:27:09Z",
+     "complete": 46
+    },
+    {
+     "id": "new",
+     "created_at": "2026-10-14T05:01:24Z",
+     "complete": 1
+    }
+   ],
+   "default": "old"
+  },
+  {
+   "runs": [
+    {
+     "id": "a",
+     "created_at": "2026-10-12T00:00:00Z",
+     "complete": 5
+    },
+    {
+     "id": "b",
+     "created_at": "2026-10-13T00:00:00Z",
+     "complete": 5
+    }
+   ],
+   "default": "b"
+  },
+  {
+   "runs": [
+    {
+     "id": "a",
+     "created_at": "2026-10-12T00:00:00Z",
+     "complete": 0
+    }
+   ],
+   "default": null
+  },
+  {
+   "runs": [],
+   "default": null
+  }
+ ]
+}
