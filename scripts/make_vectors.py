@@ -91,7 +91,8 @@ def parameter_vectors():
         schema_paths = sorted({'.'.join(str(p) for p in e['loc'][1:]) for e in _errors(validator, params, ('parameters',))})
         rules = [e['rule'] for e in constraints.failed(method.schema['x-constraints'], params)] if not schema_paths else []
         cases.append({'override': override, 'schema_paths': schema_paths, 'rules': rules})
-    write('parameters.json', {'method': {'id': method.id, 'version': method.version}, 'cases': cases})
+    write('parameters.json', {'method': {'id': method.id, 'version': method.version}, 'schema': method.schema,
+                              'defaults': method.defaults, 'cases': cases})
 
 
 def status_vectors():
