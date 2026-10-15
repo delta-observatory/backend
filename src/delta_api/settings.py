@@ -12,6 +12,8 @@ class Settings:
     artifact_root: Path
     contracts_dir: Path
     cors_origins: tuple[str, ...]
+    # The shared cohort register, mounted read-only. The cohort guard reads it.
+    cohorts_path: Path | None = None
 
 
 def load() -> Settings:
@@ -21,4 +23,5 @@ def load() -> Settings:
         artifact_root=Path(os.environ.get('DELTA_ARTIFACT_ROOT', '/data/artifacts')),
         contracts_dir=Path(os.environ.get('DELTA_CONTRACTS_DIR', PACKAGE_ROOT / 'vendor' / 'contracts')),
         cors_origins=tuple(o.strip() for o in origins.split(',') if o.strip()),
+        cohorts_path=Path(os.environ.get('DELTA_COHORTS_PATH', '/data/experiments/cohorts.json')),
     )

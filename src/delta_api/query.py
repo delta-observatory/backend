@@ -100,8 +100,9 @@ def matches(query: Query, target: dict) -> bool:
     return True
 
 
-def to_sql(query: Query, columns: dict[str, str]) -> tuple[list[str], list]:
-    """WHERE clauses and arguments. columns maps target attributes to SQL expressions."""
+def to_sql(query: Query, columns: dict[str, str], text_columns=('planet_name', 'target_id')) -> tuple[list[str], list]:
+    """WHERE clauses and arguments. columns maps target attributes to SQL expressions.
+    A text token matches the text_columns. A blind policy removes the columns that it withholds."""
     where, args = [], []
     for term in query.terms:
         if isinstance(term, Comparison):
@@ -109,7 +110,8 @@ def to_sql(query: Query, columns: dict[str, str]) -> tuple[list[str], list]:
             where.append(f'{column} {term.op} %s')
             args.append(term.value)
         else:
-            where.append(f"position(%s in lower(coalesce({columns['planet_name']}, '') || ' ' || {columns['target_id']})) > 0")
+            haystack = " || ' ' || ".join(f"coalesce({columns[c]}, '')" for c in text_columns)
+            where.append(f"position(%s in lower({haystack})) > 0")
             args.append(term.needle)
     return where, args
 

@@ -22,7 +22,7 @@ from delta_api.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / 'vendor' / 'migrations'
-TABLES = 'measurement, artifact, job, run_input, run, observation, dataset, client'
+TABLES = 'access_event, campaign_read, measurement, artifact, job, run_input, run, observation, dataset, client, campaign'
 
 
 @pytest.fixture(scope='session')
@@ -54,18 +54,51 @@ def artifact_root(tmp_path):
 
 
 @pytest.fixture
-def client(database_url, conn, artifact_root):
+def cohorts_path(tmp_path):
+    """An empty cohort register. A test adds entries with write_register."""
+    path = tmp_path / 'cohorts.json'
+    write_register(path, [])
+    return path
+
+
+def write_register(path, entries):
+    """Write a register with entries (id, role, observation_ids, group_ids). Change the size so the cache reloads."""
+    document = {'schema_version': 1, 'scope': 'test', 'access_events': [],
+                'entries': [{'id': i, 'role': role, 'observation_ids': list(obs), 'group_ids': list(groups)}
+                            for i, role, obs, groups in entries]}
+    path.write_text(json.dumps(document, indent=1) + ' ' * len(entries))
+
+
+@pytest.fixture
+def client(database_url, conn, artifact_root, cohorts_path):
     settings = Settings(database_url=database_url, artifact_root=artifact_root,
-                        contracts_dir=ROOT / 'vendor' / 'contracts', cors_origins=())
+                        contracts_dir=ROOT / 'vendor' / 'contracts', cors_origins=(), cohorts_path=cohorts_path)
     _, token = create_client(conn, name='richard', kind='person', permissions=['read', 'run.submit', 'record.write',
                              'acquire', 'identity.reveal', 'admin'], created_by='test')
     with TestClient(create_app(settings), headers={'Authorization': f'Bearer {token}'}) as test_client:
         yield test_client
 
 
-def token_for(conn, name, kind='agent', permissions=('read', 'run.submit', 'record.write')):
-    """Create a client and return headers with its token."""
-    _, token = create_client(conn, name=name, kind=kind, permissions=list(permissions), created_by='test')
+def add_campaign(conn, name='pilot', *, blinding='open', budgets=None, approved=True):
+    """Insert a campaign. An approved campaign has a placeholder campaign file hash. Return its id."""
+    owner = conn.execute("SELECT id FROM client WHERE kind = 'person' ORDER BY created_at LIMIT 1").fetchone()
+    if owner is None:
+        owner, _ = create_client(conn, name='owner', kind='person', permissions=['admin'], created_by='test')
+    return conn.execute("""
+        INSERT INTO campaign (name, title, question, blinding, budgets, created_by, approved_by, approved_at,
+                              campaign_file_sha256)
+        VALUES (%s, 'Test campaign', 'Does the test pass?', %s, %s, %s,
+                CASE WHEN %s THEN %s::uuid END, CASE WHEN %s THEN now() END, CASE WHEN %s THEN repeat('c', 64) END)
+        RETURNING id""", [name, blinding, Jsonb(budgets or {}), owner['id'], approved, owner['id'], approved,
+                          approved]).fetchone()['id']
+
+
+def token_for(conn, name, kind='agent', permissions=('read', 'run.submit', 'record.write'), campaign_id=None):
+    """Create a client and return headers with its token. An agent without a campaign gets an open, approved one."""
+    if kind == 'agent' and campaign_id is None:
+        campaign_id = add_campaign(conn, f'open-{name}')
+    _, token = create_client(conn, name=name, kind=kind, permissions=list(permissions), created_by='test',
+                             campaign_id=campaign_id)
     return {'Authorization': f'Bearer {token}'}
 
 

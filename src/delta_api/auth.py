@@ -21,12 +21,14 @@ class Actor:
     name: str
     kind: str
     permissions: frozenset = field(default_factory=frozenset)
+    campaign_id: uuid.UUID | None = None
 
     def has(self, permission: str) -> bool:
         return permission in self.permissions
 
     def describe(self) -> dict:
-        return {'id': self.id, 'name': self.name, 'kind': self.kind, 'permissions': sorted(self.permissions)}
+        return {'id': self.id, 'name': self.name, 'kind': self.kind, 'permissions': sorted(self.permissions),
+                'campaign_id': self.campaign_id}
 
 
 def token_sha256(token: str) -> str:
@@ -45,21 +47,22 @@ def check_permissions(kind: str, permissions: list[str]) -> list[str]:
     return errors
 
 
-def create_client(conn, *, name: str, kind: str, permissions: list[str], created_by: str, note: str | None = None) -> tuple[dict, str]:
+def create_client(conn, *, name: str, kind: str, permissions: list[str], created_by: str, note: str | None = None,
+                  campaign_id=None) -> tuple[dict, str]:
     """Insert a client. Return its row and its token. The token is not stored and cannot be read again."""
     token = new_token()
     row = conn.execute("""
-        INSERT INTO client (name, kind, permissions, token_sha256, note, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id, name, kind, permissions, note, created_by, created_at, disabled_at""",
-                       [name, kind, sorted(set(permissions)), token_sha256(token), note, created_by]).fetchone()
+        INSERT INTO client (name, kind, permissions, token_sha256, note, created_by, campaign_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id, name, kind, permissions, campaign_id, note, created_by, created_at, disabled_at""",
+                       [name, kind, sorted(set(permissions)), token_sha256(token), note, created_by, campaign_id]).fetchone()
     return row, token
 
 
 def lookup(conn, token: str) -> Actor | None:
     row = conn.execute("""
-        SELECT id, name, kind, permissions FROM client
+        SELECT id, name, kind, permissions, campaign_id FROM client
         WHERE token_sha256 = %s AND disabled_at IS NULL""", [token_sha256(token)]).fetchone()
     if row is None:
         return None
-    return Actor(row['id'], row['name'], row['kind'], frozenset(row['permissions']))
+    return Actor(row['id'], row['name'], row['kind'], frozenset(row['permissions']), row['campaign_id'])

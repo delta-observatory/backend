@@ -23,6 +23,7 @@ def main(argv=None) -> int:
     create.add_argument('--kind', required=True, choices=['person', 'agent', 'service'])
     create.add_argument('--permissions', required=True, help=f'Comma-separated, or "all". Permissions: {", ".join(PERMISSIONS)}.')
     create.add_argument('--note')
+    create.add_argument('--campaign', help='Campaign name. Every agent needs one.')
     sub.add_parser('list-clients', help='List clients without tokens.')
     args = parser.parse_args(argv)
 
@@ -32,7 +33,8 @@ def main(argv=None) -> int:
         return 2
     with psycopg.connect(url, autocommit=True, row_factory=dict_row) as conn:
         if args.command == 'list-clients':
-            for row in conn.execute('SELECT id, name, kind, permissions, created_at, disabled_at FROM client ORDER BY name'):
+            for row in conn.execute('SELECT id, name, kind, permissions, campaign_id, created_at, disabled_at '
+                                    'FROM client ORDER BY name'):
                 print(json.dumps(row, default=str))
             return 0
         permissions = list(PERMISSIONS) if args.permissions == 'all' else [p.strip() for p in args.permissions.split(',') if p.strip()]
@@ -40,8 +42,19 @@ def main(argv=None) -> int:
         if errors:
             print('; '.join(errors), file=sys.stderr)
             return 2
+        campaign_id = None
+        if args.campaign:
+            campaign = conn.execute('SELECT id FROM campaign WHERE name = %s AND closed_at IS NULL',
+                                    [args.campaign]).fetchone()
+            if campaign is None:
+                print(f'no open campaign named {args.campaign}', file=sys.stderr)
+                return 2
+            campaign_id = campaign['id']
+        elif args.kind == 'agent':
+            print('an agent needs --campaign', file=sys.stderr)
+            return 2
         row, token = create_client(conn, name=args.name, kind=args.kind, permissions=permissions,
-                                   created_by='admin-command', note=args.note)
+                                   created_by='admin-command', note=args.note, campaign_id=campaign_id)
         print(json.dumps({'client': row, 'token': token}, default=str))
     return 0
 

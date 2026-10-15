@@ -27,6 +27,7 @@ The API does not import code from `../database` at runtime.
 | `DELTA_ARTIFACT_ROOT` | `/data/artifacts` | Artifact storage root. The API only reads it. |
 | `DELTA_CONTRACTS_DIR` | `vendor/contracts` | Contract schema directory. |
 | `DELTA_CORS_ORIGINS` | empty | Comma-separated origins that can call the API from a browser. |
+| `DELTA_COHORTS_PATH` | `/data/experiments/cohorts.json` | The shared cohort register, mounted read-only. The cohort guard reads it. |
 
 The API keeps no job, run, or session state in process memory.
 Any replica can serve any request.
@@ -42,13 +43,14 @@ Each token belongs to one client in the `client` table: a person, an agent, or a
 |---|---|
 | `read` | Every read endpoint, and `POST /runs/estimate`. |
 | `run.submit` | `POST /runs`, and `POST /jobs/{id}/cancel` for the client's own runs. |
-| `record.write` | Research records. No endpoint uses it yet. |
+| `record.write` | `POST /campaigns/{id}/fix-decisions` for an agent of the campaign. Research records will also use it. |
 | `acquire` | Acquisition of new observations. No endpoint uses it yet. |
-| `identity.reveal` | The identity reveal of a campaign. No endpoint uses it yet. |
-| `admin` | Client management, dataset indexing, and cancellation of any job. |
+| `identity.reveal` | `POST /campaigns/{id}/reveal`. |
+| `admin` | Client and campaign management, access events, dataset indexing, and cancellation of any job. |
 
 Richard decided that an agent never holds `acquire`, `identity.reveal`, or `admin`. The API and a database constraint both refuse it.
 Each write records its client: `run.client_id` and `run.requested_by` (`client:<name>`), and `job.cancelled_by`.
+Every agent belongs to one campaign (`client.campaign_id`). The next section gives the campaign rules.
 
 Create the first client with a command next to the API. It prints the token once:
 
@@ -56,7 +58,62 @@ Create the first client with a command next to the API. It prints the token once
 kubectl -n delta-observatory exec deploy/delta-api -- python -m delta_api.admin create-client --name richard --kind person --permissions all
 ```
 
-That client creates other clients with `POST /clients`.
+That client creates other clients with `POST /clients`. An agent client needs `campaign_id`.
+The command takes `--campaign <name>` for an agent.
+
+## Campaigns
+
+A campaign is the scope of agent work. It has a question, a blinding level, budgets, and a lifecycle.
+`policy.py` applies the campaign rules to each request of an agent. A person or a service has no campaign rules.
+
+The lifecycle has this order:
+
+1. Richard creates the campaign (`POST /campaigns`) and the agent clients.
+2. Richard approves the campaign file (`POST /campaigns/{id}/approve` with its SHA-256). Before the approval, an agent reads only its campaign.
+3. The agent reads observation data and submits runs inside the budgets.
+4. The agent or Richard fixes the decisions (`POST /campaigns/{id}/fix-decisions`). After this, the agent submits no new runs.
+5. Richard records the reveal with a reason (`POST /campaigns/{id}/reveal`). Blinding then ends for the campaign.
+6. Richard closes the campaign (`POST /campaigns/{id}/close`). After this, the agent reads no observation data and writes nothing.
+
+Each step is valid only after the step before it. A step in the wrong state gives 409. The database checks the same order.
+
+### Blinding
+
+| Level | Withheld from the agent |
+|---|---|
+| `open` | Nothing. |
+| `labels` | Known-object labels: `labels`, label classes, planet names, reference periods, period errors, the `period-agreement/1` status, and `reference_comparison` measurements and diagnostics. |
+| `labels_identity` | The labels, and catalog identity: `target_id`, `relative_path`, `sha256`, sky position, identifying header keywords, and the source hash in `input_checks`. |
+
+Richard decided that `labels_identity` is the default level.
+A withheld value is null or absent, and each list or detail response names the withheld groups in `withheld`.
+A filter, query field, text search, or sort on a withheld value gives 422.
+A redacted `search_summary` or `input_checks` artifact comes back as uncompressed JSON.
+Header keywords for vetting stay visible: sector, magnitude, stellar parameters, crowding, and noise values. They narrow the identity but do not give it.
+
+### Cohort guard
+
+The guard reads `experiments/cohorts.json`. An `evaluation` reservation protects its observations.
+An observation matches when its `target_id` is an observation or group identity of the reservation.
+It also matches when `mast:TESS/product/<relative_path>` is an observation identity.
+
+For an agent, lists leave out protected observations and give the count in `protected_excluded`.
+A read of a protected observation gives 403, and a run request with one gives 422.
+Each refusal writes an `access_event` row with outcome `refused`. Each read by a person writes one with outcome `allowed`.
+When the register is missing or invalid, agent requests that touch observations give 503. Person requests continue.
+
+### Budgets
+
+| Budget | Counts |
+|---|---|
+| `observations_read` | Distinct observations whose data the campaign read: details, results, folds, jobs, and artifact content. Lists do not count. |
+| `jobs` | Jobs in the runs of the campaign. |
+| `compute_seconds` | Worker seconds of finished jobs, plus estimates for waiting and new jobs at the median rate of the method. |
+| `storage_bytes` | Bytes of the artifacts of the campaign jobs. |
+
+A missing key means no limit. A request past a limit gives 403 and writes nothing.
+`POST /runs/estimate` gives an agent the budget state after the run, and the budgets that the run would exceed.
+`GET /campaigns/{id}` gives the limit, use, and remaining amount of each budget.
 
 ## Client parity
 
@@ -76,7 +133,7 @@ The frontend repeats three calculations while the user types or drags: the targe
 `scripts/make_vectors.py` writes the vectors from the API code. A changed vector means a changed rule.
 The frontend keeps a copy of the vectors in `vendor/api-vectors/`.
 
-A later blind-campaign policy withholds known-object labels from some clients.
+A campaign with blinding withholds known-object labels from its agents.
 `GET /targets` then gives no label fields and no status, and refuses query fields that need labels.
 
 ## Endpoints
@@ -88,6 +145,11 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /health` | Database status. The status code is 503 when the database is unavailable. No token. |
 | `GET /me` | The client of the token, with its permissions. |
 | `GET /clients`, `POST /clients`, `POST /clients/{id}/disable` | Client management (`admin`). `POST /clients` returns the token once. |
+| `GET /campaigns`, `GET /campaigns/{id}` | Campaigns with budget state and clients. An agent sees only its own campaign. |
+| `POST /campaigns`, `POST /campaigns/{id}/approve`, `POST /campaigns/{id}/budgets`, `POST /campaigns/{id}/close` | Campaign management (`admin`). |
+| `POST /campaigns/{id}/fix-decisions` | Fixes the decisions (`record.write` for an agent of the campaign, or `admin`). |
+| `POST /campaigns/{id}/reveal` | Records the reveal with a reason (`identity.reveal`). |
+| `GET /access-events` | Reads and refused reads of protected observations, newest first (`admin`). Filters: `campaign_id`, `outcome`, `limit`. |
 | `GET /methods` | Every method with its kind, scientific status, parameter schema, and defaults. |
 | `GET /methods/{id}/{version}` | One method. |
 | `GET /datasets` | Datasets with state, findings, last index time, and observation counts by state. |
@@ -144,6 +206,7 @@ A time value also has `time_scale` and `time_reference`.
 The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
 `test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
+`test_campaigns.py` checks that blinding, the cohort guard, budgets, and the lifecycle stop prohibited agent actions.
 `test_rules.py` checks the rules against `tests/vectors/`. `test_parity_api.py` checks the client-parity endpoints, including the SQL form of the target query against the vectors.
 
 ```bash

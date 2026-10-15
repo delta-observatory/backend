@@ -4,7 +4,7 @@ import uuid
 import psycopg
 import pytest
 
-from conftest import add_observation, token_for
+from conftest import add_campaign, add_observation, token_for
 
 
 def test_every_endpoint_except_health_needs_a_token(client):
@@ -22,14 +22,18 @@ def test_every_endpoint_except_health_needs_a_token(client):
 
 def test_me_and_client_management(client, conn):
     assert client.get('/api/me').json()['name'] == 'richard'
-    created = client.post('/api/clients', json={'name': 'agent-a', 'kind': 'agent', 'permissions': ['read', 'run.submit', 'record.write']})
+    campaign = str(add_campaign(conn))
+    assert client.post('/api/clients', json={'name': 'agent-a', 'kind': 'agent', 'permissions': ['read']}).status_code == 422
+    created = client.post('/api/clients', json={'name': 'agent-a', 'kind': 'agent', 'campaign_id': campaign,
+                                                'permissions': ['read', 'run.submit', 'record.write']})
     assert created.status_code == 201 and created.json()['token'].startswith('dlt_')
     token = created.json()['token']
     me = client.get('/api/me', headers={'Authorization': f'Bearer {token}'}).json()
     assert me['kind'] == 'agent' and me['permissions'] == ['read', 'record.write', 'run.submit']
     stored = conn.execute("SELECT token_sha256 FROM client WHERE name = 'agent-a'").fetchone()['token_sha256']
     assert token not in stored and len(stored) == 64
-    assert client.post('/api/clients', json={'name': 'agent-a', 'kind': 'agent', 'permissions': ['read']}).status_code == 409
+    assert client.post('/api/clients', json={'name': 'agent-a', 'kind': 'agent', 'campaign_id': campaign,
+                                             'permissions': ['read']}).status_code == 409
     # Richard's decision: an agent cannot hold acquisition, identity reveal, or administration.
     for permission in ('acquire', 'identity.reveal', 'admin'):
         response = client.post('/api/clients', json={'name': f'agent-{permission.replace(".", "")}', 'kind': 'agent', 'permissions': ['read', permission]})
