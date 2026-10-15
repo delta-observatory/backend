@@ -192,9 +192,19 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         if not labels_visible:
             errors += [{'loc': ['query', 'q'], 'msg': f'field "{t.field}" needs known-object labels'}
                        for t in parsed.terms if isinstance(t, query_module.Comparison) and t.field in query_module.LABEL_FIELDS]
+        if run_id is None:
+            # Without a run there are no search values and no status. A filter or sort on them is an error, not an empty result.
+            errors += [{'loc': ['query', 'q'], 'msg': f'field "{t.field}" needs run_id'}
+                       for t in parsed.terms if isinstance(t, query_module.Comparison) and t.field in query_module.RUN_FIELDS]
+            if sort == '-depth_snr':
+                sort = 'target_id'
+            if in_run:
+                errors.append({'loc': ['query', 'in_run'], 'msg': 'in_run needs run_id'})
         key = sort.removeprefix('-')
         if key not in TARGET_ATTRIBUTES:
             errors.append({'loc': ['query', 'sort'], 'msg': f'unknown attribute "{key}"'})
+        elif run_id is None and key in RUN_ATTRIBUTES:
+            errors.append({'loc': ['query', 'sort'], 'msg': f'attribute "{key}" needs run_id'})
         if errors:
             raise ValidationFailure(errors)
         where, args = ["o.state = 'ready'"], []
@@ -233,9 +243,12 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             LIMIT %s OFFSET %s""", [*all_args, limit, offset]).fetchall()
         for row in rows:
             row['status'] = PERIOD_AGREEMENT.status(row['label_class'], row['depth_snr'], row['relative_period_error'],
-                                                    labels_visible)
+                                                    labels_visible) if run_id is not None else None
         return {'total': total, 'limit': limit, 'offset': offset, 'run_id': run_id, 'grammar': query_module.GRAMMAR,
-                'status_rule': PERIOD_AGREEMENT.id, 'labels_visible': labels_visible, 'units': TARGET_UNITS, 'items': rows}
+                'status_rule': PERIOD_AGREEMENT.id, 'labels_visible': labels_visible, 'units': TARGET_UNITS,
+                'run_values': run_id is not None,
+                'note': None if run_id is not None else 'No run_id: search values, job states, and status are null. Name a run to get them.',
+                'items': rows}
 
     @app.get('/api/observations/{observation_id}')
     def get_observation(observation_id: uuid.UUID, conn: Conn):
@@ -533,6 +546,7 @@ SKY_COLUMNS = ', '.join(f"{_json_number(f'header -> {key!r}')} AS {name}"
 
 TARGET_UNITS = {'cadence_seconds': 's', 'ra_deg': 'deg', 'dec_deg': 'deg', 'tmag': 'mag', 'reference_period_days': 'd', 'period_days': 'd',
                 'depth': '1', 'depth_snr': '1', 'relative_period_error': '1'}
+RUN_ATTRIBUTES = {'job_state', 'outcome', 'period_days', 'depth', 'depth_snr', 'relative_period_error'}
 TARGET_ATTRIBUTES = ('observation_id', 'dataset_id', 'target_id', 'sector', 'cadence_seconds', 'ra_deg', 'dec_deg', 'tmag', 'label_class',
                      'planet_name', 'reference_period_days', 'job_state', 'outcome', 'period_days', 'depth',
                      'depth_snr', 'relative_period_error')

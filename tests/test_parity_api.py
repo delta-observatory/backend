@@ -67,9 +67,16 @@ def test_targets_values_status_sort_and_paging(client, conn):
     hosts = client.get('/api/targets', params={'run_id': str(run_id), 'class': 'no_known_planet'}).json()
     assert sorted(ids[r['observation_id']] for r in hosts['items']) == ['b', 'd']
     assert client.get('/api/targets', params={'sort': 'colour'}).status_code == 422
-    # Without a run, the measurement fields are null.
-    plain = client.get('/api/targets').json()['items']
-    assert all(r['period_days'] is None for r in plain)
+    # Without a run, the run fields and the status are null, and the response says so.
+    plain = client.get('/api/targets').json()
+    assert not plain['run_values'] and plain['note']
+    assert all(r['period_days'] is None and r['status'] is None for r in plain['items'])
+    # A filter or a sort on a run field without a run is an error, not an empty result.
+    response = client.get('/api/targets', params={'q': 'snr>20'})
+    assert response.status_code == 422 and 'needs run_id' in response.json()['detail'][0]['msg']
+    assert client.get('/api/targets', params={'sort': '-period_days'}).status_code == 422
+    assert client.get('/api/targets', params={'in_run': 'true'}).status_code == 422
+    assert client.get('/api/targets', params={'q': 'tmag<9'}).status_code == 200
 
 
 def test_default_run_rule(client, conn):

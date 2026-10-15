@@ -26,6 +26,8 @@ FIELDS: dict[str, tuple[str, str]] = {
 }
 # Fields that come from known-object labels. A blind policy withholds them.
 LABEL_FIELDS = {'err', 'pref'}
+# Fields that come from the measurements of a run. A query without a run cannot use them.
+RUN_FIELDS = {'snr', 'err', 'p'}
 
 TOKEN = re.compile(r'^([a-z]+)([<>=:])(.*)$', re.IGNORECASE)
 
@@ -118,6 +120,7 @@ def describe() -> dict:
         'summary': 'Tokens separated by spaces. Every token must match. A token field>value, field<value, '
                    'field=value, or field:value compares a number. Any other token matches part of the planet '
                    'name or the TIC identifier, without regard to case. A missing value does not match.',
-        'fields': {name: {'attribute': attr, 'unit': unit, 'requires_labels': name in LABEL_FIELDS}
+        'fields': {name: {'attribute': attr, 'unit': unit, 'requires_labels': name in LABEL_FIELDS,
+                          'requires_run': name in RUN_FIELDS}
                    for name, (attr, unit) in FIELDS.items()},
     }
