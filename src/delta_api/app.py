@@ -208,7 +208,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         q_where, q_args = query_module.to_sql(parsed, {a: a for a in TARGET_ATTRIBUTES})
         base = f"""
             WITH t AS (
-                SELECT o.id AS observation_id, o.dataset_id, o.target_id, o.sector, {SKY_COLUMNS},
+                SELECT o.id AS observation_id, o.dataset_id, o.target_id, o.sector, o.cadence_seconds, {SKY_COLUMNS},
                        o.labels ->> 'class' AS label_class,
                        o.labels -> 'planets' -> 0 ->> 'name' AS planet_name,
                        {_json_number("o.labels -> 'planets' -> 0 -> 'period_days'")} AS reference_period_days,
@@ -531,9 +531,9 @@ def _json_number(expression: str) -> str:
 SKY_COLUMNS = ', '.join(f"{_json_number(f'header -> {key!r}')} AS {name}"
                         for key, name in (('RA_OBJ', 'ra_deg'), ('DEC_OBJ', 'dec_deg'), ('TESSMAG', 'tmag')))
 
-TARGET_UNITS = {'ra_deg': 'deg', 'dec_deg': 'deg', 'tmag': 'mag', 'reference_period_days': 'd', 'period_days': 'd',
+TARGET_UNITS = {'cadence_seconds': 's', 'ra_deg': 'deg', 'dec_deg': 'deg', 'tmag': 'mag', 'reference_period_days': 'd', 'period_days': 'd',
                 'depth': '1', 'depth_snr': '1', 'relative_period_error': '1'}
-TARGET_ATTRIBUTES = ('observation_id', 'dataset_id', 'target_id', 'sector', 'ra_deg', 'dec_deg', 'tmag', 'label_class',
+TARGET_ATTRIBUTES = ('observation_id', 'dataset_id', 'target_id', 'sector', 'cadence_seconds', 'ra_deg', 'dec_deg', 'tmag', 'label_class',
                      'planet_name', 'reference_period_days', 'job_state', 'outcome', 'period_days', 'depth',
                      'depth_snr', 'relative_period_error')
 

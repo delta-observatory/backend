@@ -61,7 +61,7 @@ def test_targets_values_status_sort_and_paging(client, conn):
     assert by['a']['status'] == 'match' and by['b']['status'] == 'signal' and by['c']['status'] == 'miss'
     assert by['e']['status'] == 'quiet' and by['e']['job_state'] is None
     assert by['a']['planet_name'] == 'WASP-18 b' and by['a']['reference_period_days'] == 0.9415
-    assert by['a']['tmag'] == 8.83 and by['a']['ra_deg'] == 10.0
+    assert by['a']['tmag'] == 8.83 and by['a']['ra_deg'] == 10.0 and by['a']['cadence_seconds'] == 120
     page = client.get('/api/targets', params={'run_id': str(run_id), 'limit': 2, 'offset': 2}).json()
     assert page['total'] == 5 and [ids[r['observation_id']] for r in page['items']] == ['d', 'c']
     hosts = client.get('/api/targets', params={'run_id': str(run_id), 'class': 'no_known_planet'}).json()
