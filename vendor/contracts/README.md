@@ -69,7 +69,7 @@ The record documents keep four things apart:
 | Evidence status | `assessment/1` on the `evidence` axis. |
 | Identity status | `assessment/1` on the `identity` axis. A model judgment cannot give an identity status. |
 
-[../README.md](../README.md#research-records) describes the tables, the triggers, and the task lease.
+The "Research records" section of the database repository README describes the tables, the triggers, and the task lease.
 
 ## Conventions
 
