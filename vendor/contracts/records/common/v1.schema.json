@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/common/v1.schema.json",
+  "title": "Shared definitions of the research records, version 1",
+  "description": "References, missing-value forms, and identifiers that the note, agent-task, candidate, assessment, and decision records use. This file defines no record.",
+  "$defs": {
+    "uuid": {"type": "string", "format": "uuid"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "reason": {
+      "description": "Why a value is missing. A missing value always has a reason.",
+      "type": "string", "minLength": 1, "maxLength": 2000
+    },
+    "versioned_id": {
+      "description": "A named, versioned item: a worker method, a decision question, or a decision policy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "quality_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 50,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+    },
+    "ref": {
+      "description": "A reference to a platform record or to an external file. The database keeps each reference as a foreign key, so a referenced platform record must exist.",
+      "oneOf": [
+        {"$ref": "#/$defs/record_ref"},
+        {"$ref": "#/$defs/artifact_ref"},
+        {"$ref": "#/$defs/measurement_ref"},
+        {"$ref": "#/$defs/external_ref"}
+      ]
+    },
+    "record_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["campaign", "observation", "run", "job", "candidate", "assessment", "decision", "note", "agent_task"]},
+        "id": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"const": "artifact"},
+        "id": {"$ref": "#/$defs/uuid"},
+        "sha256": {
+          "description": "Optional. When present, it must equal the SHA-256 of the stored artifact.",
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "measurement_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"const": "measurement"},
+        "id": {"type": "integer", "minimum": 1}
+      }
+    },
+    "external_ref": {
+      "description": "A file outside the platform, for example a lab output. It is a proposal, not platform evidence. The checksum and size identify the content.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "uri", "sha256", "bytes"],
+      "properties": {
+        "kind": {"const": "external"},
+        "uri": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000}
+      }
+    },
+    "refs": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/ref"}
+    }
+  }
+}

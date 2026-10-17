@@ -1,0 +1,18 @@
+{
+  "contract": "candidate/1",
+  "kind": "transit_signal",
+  "tier": "platform",
+  "summary": "A platform candidate needs a measurement or a job as evidence.",
+  "observation_ids": [
+    "9a1d6c2e-58f4-4c1b-a8e3-7f2b9c0d4e51"
+  ],
+  "evidence": [
+    {
+      "kind": "external",
+      "uri": "lab:delta-lab/runs/search/352175877/result.json",
+      "sha256": "2a4e90a6f8adc65035803133c8d52634b4bb1ee3933bc0e7605b6d4cb775163c",
+      "bytes": 9150,
+      "description": "Lab BLS search result for the light curve of C001."
+    }
+  ]
+}

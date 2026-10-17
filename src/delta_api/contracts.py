@@ -1,7 +1,7 @@
-"""Read the vendored contract schemas. Check job documents and method parameters.
+"""Read the vendored contract schemas. Check job documents, method parameters, and research records.
 
-The schemas in vendor/contracts/ are the only source of job, result, and
-method-parameter shapes. This module does not define those shapes.
+The schemas in vendor/contracts/ are the only source of job, result,
+method-parameter, and record shapes. This module does not define those shapes.
 """
 from dataclasses import dataclass
 import copy
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 from . import constraints
 
@@ -101,7 +102,20 @@ class Contracts:
     def __init__(self, root: Path):
         self.root = root
         self.source = (root / 'SOURCE').read_text().strip() if (root / 'SOURCE').exists() else 'unknown'
+        # Record schemas refer to records/common/v1.schema.json by its $id.
+        schemas = [json.loads(p.read_text()) for p in sorted(root.rglob('*.schema.json'))]
+        self.registry = Registry().with_resources((s['$id'], Resource.from_contents(s)) for s in schemas)
         self.job_validator = self._validator(root / 'job' / 'v1.schema.json')
+        # Research records by contract name, for example "candidate/1".
+        self.records: dict[str, tuple[dict, Draft202012Validator]] = {}
+        for path in sorted((root / 'records').glob('*/v*.schema.json')):
+            if path.parent.name == 'common':
+                continue
+            schema = json.loads(path.read_text())
+            Draft202012Validator.check_schema(schema)
+            version = int(path.name.removeprefix('v').split('.')[0])
+            self.records[f'{path.parent.name}/{version}'] = (
+                schema, Draft202012Validator(schema, registry=self.registry, format_checker=FormatChecker()))
         self.methods: dict[tuple[str, int], Method] = {}
         self._validators: dict[tuple[str, int], Draft202012Validator] = {}
         for path in sorted((root / 'methods').glob('*/v*.schema.json')):
@@ -117,6 +131,19 @@ class Contracts:
         schema = json.loads(path.read_text())
         Draft202012Validator.check_schema(schema)
         return Draft202012Validator(schema, format_checker=FormatChecker())
+
+    def record(self, contract: str, document: Any) -> dict:
+        """Check a record document against its schema. Return it with the schema defaults applied."""
+        if not isinstance(document, dict) or document.get('contract') != contract:
+            got = document.get('contract') if isinstance(document, dict) else None
+            raise ValidationFailure([{'loc': ['body', 'contract'],
+                                      'msg': f'expected contract "{contract}", got {json.dumps(got)}'}])
+        schema, validator = self.records[contract]
+        document = deep_merge(defaults(schema), document)
+        errors = _errors(validator, document, ('body',))
+        if errors:
+            raise ValidationFailure(errors)
+        return document
 
     def method(self, method_id: str, version: int) -> Method | None:
         return self.methods.get((method_id, version))

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/agent-task/v1.schema.json",
+  "title": "Agent task, version 1",
+  "description": "One unit of agent work in a campaign. A client claims the task for a lease, as a worker claims a job. The campaign, state, lease, attempts, and writer come from the database, not from this document. Omitted fields take their default values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "kind", "title"],
+  "properties": {
+    "contract": {"const": "agent-task/1"},
+    "kind": {
+      "description": "A short work type that a claim can select, for example search, vetting, or review.",
+      "type": "string", "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "instructions": {"type": "string", "maxLength": 20000, "default": ""},
+    "inputs": {
+      "description": "Records and files that the task uses.",
+      "allOf": [{"$ref": "../common/v1.schema.json#/$defs/refs"}],
+      "default": []
+    },
+    "priority": {
+      "description": "A claim takes the highest priority first, then the oldest task.",
+      "type": "integer", "minimum": 0, "maximum": 100, "default": 50
+    },
+    "lease_seconds": {
+      "description": "Length of each lease. The holder extends the lease before it expires.",
+      "type": "integer", "minimum": 30, "maximum": 86400, "default": 900, "x-unit": "s"
+    },
+    "max_attempts": {
+      "description": "Claims permitted. After the last lease expires, the next claim records the task as failed.",
+      "type": "integer", "minimum": 1, "maximum": 10, "default": 3
+    }
+  }
+}

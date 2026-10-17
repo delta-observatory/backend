@@ -22,7 +22,8 @@ from delta_api.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / 'vendor' / 'migrations'
-TABLES = 'access_event, campaign_read, measurement, artifact, job, run_input, run, observation, dataset, client, campaign'
+TABLES = ('record_link, candidate_observation, assessment, decision, candidate, note, agent_task, access_event, '
+          'campaign_read, measurement, artifact, job, run_input, run, observation, dataset, client, campaign')
 
 
 @pytest.fixture(scope='session')

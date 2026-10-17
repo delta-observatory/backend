@@ -1,0 +1,24 @@
+{
+  "contract": "candidate/1",
+  "kind": "transit_signal",
+  "tier": "platform",
+  "summary": "tess-bls v1 search result above the campaign threshold.",
+  "observation_ids": [
+    "9a1d6c2e-58f4-4c1b-a8e3-7f2b9c0d4e51"
+  ],
+  "evidence": [
+    {
+      "kind": "job",
+      "id": "3c6f9e2a-1b7d-4e8f-9a0c-5d2e7f1b3a64"
+    },
+    {
+      "kind": "measurement",
+      "id": 4021
+    },
+    {
+      "kind": "artifact",
+      "id": "7e2d4b1a-9c3f-4a6e-8b5d-1f0c2e9a7b38",
+      "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+    }
+  ]
+}

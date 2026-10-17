@@ -1,0 +1,16 @@
+{
+  "contract": "candidate/1",
+  "kind": "transit_signal",
+  "tier": "lab",
+  "summary": "An external file needs its SHA-256.",
+  "observation_ids": [
+    "9a1d6c2e-58f4-4c1b-a8e3-7f2b9c0d4e51"
+  ],
+  "evidence": [
+    {
+      "kind": "external",
+      "uri": "lab:x/result.json",
+      "bytes": 10
+    }
+  ]
+}

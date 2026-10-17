@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/assessment/v1.schema.json",
+  "title": "Assessment record, version 1",
+  "description": "One status of a candidate on one axis. The evidence axis gives evidence quality. The identity axis gives the comparison with known objects. The two axes stay separate. The newest assessment on an axis gives the current status of the candidate (rule candidate-status/1). An assessment does not change after the write. A correction is a new assessment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "candidate_id", "axis", "status", "basis", "reason"],
+  "properties": {
+    "contract": {"const": "assessment/1"},
+    "candidate_id": {"$ref": "../common/v1.schema.json#/$defs/uuid"},
+    "axis": {"enum": ["evidence", "identity"]},
+    "status": {"enum": ["unreviewed", "supported", "ambiguous", "rejected", "unchecked", "matched", "unmatched"]},
+    "basis": {
+      "description": "method: a versioned worker method calculated the status. review: a person or an agent reviewed the evidence. model_judgment: a decision record holds the model judgment that gives the status.",
+      "enum": ["method", "review", "model_judgment"]
+    },
+    "method": {"$ref": "../common/v1.schema.json#/$defs/versioned_id"},
+    "decision_id": {"$ref": "../common/v1.schema.json#/$defs/uuid"},
+    "reason": {"$ref": "../common/v1.schema.json#/$defs/text"},
+    "evidence": {"$ref": "../common/v1.schema.json#/$defs/refs"},
+    "quality_flags": {"$ref": "../common/v1.schema.json#/$defs/quality_flags"},
+    "supersedes": {
+      "description": "An earlier assessment of the same candidate on the same axis that this assessment corrects.",
+      "$ref": "../common/v1.schema.json#/$defs/uuid"
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"axis": {"const": "evidence"}}, "required": ["axis"]},
+      "then": {"properties": {"status": {"enum": ["unreviewed", "supported", "ambiguous", "rejected"]}}},
+      "else": {"properties": {"status": {"enum": ["unchecked", "matched", "unmatched", "ambiguous"]}}}
+    },
+    {
+      "if": {"properties": {"basis": {"const": "method"}}, "required": ["basis"]},
+      "then": {"required": ["method"]},
+      "else": {"not": {"required": ["method"]}}
+    },
+    {
+      "if": {"properties": {"basis": {"const": "model_judgment"}}, "required": ["basis"]},
+      "then": {"required": ["decision_id"], "properties": {"axis": {"const": "evidence"}}},
+      "else": {"not": {"required": ["decision_id"]}}
+    },
+    {
+      "description": "A status other than unreviewed or unchecked needs evidence.",
+      "if": {"properties": {"status": {"enum": ["unreviewed", "unchecked"]}}, "required": ["status"]},
+      "else": {"required": ["evidence"], "properties": {"evidence": {"minItems": 1}}}
+    }
+  ]
+}

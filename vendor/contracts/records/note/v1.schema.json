@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/note/v1.schema.json",
+  "title": "Note record, version 1",
+  "description": "Free text from a person or an agent about one or more records. A note does not change a measured value, a status, or another record. The writer and the time come from the request, not from this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "body", "subjects"],
+  "properties": {
+    "contract": {"const": "note/1"},
+    "body": {"$ref": "../common/v1.schema.json#/$defs/text"},
+    "subjects": {
+      "description": "The records that the note is about.",
+      "allOf": [{"$ref": "../common/v1.schema.json#/$defs/refs"}],
+      "minItems": 1,
+      "maxItems": 50
+    }
+  }
+}

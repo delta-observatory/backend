@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/agent-task-report/v1.schema.json",
+  "title": "Agent task report, version 1",
+  "description": "The end of one claimed agent task. Only the client that holds the current lease can write it. The report ends the task as complete or failed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "outcome", "summary"],
+  "properties": {
+    "contract": {"const": "agent-task-report/1"},
+    "outcome": {"enum": ["complete", "failed"]},
+    "summary": {"$ref": "../common/v1.schema.json#/$defs/text"},
+    "outputs": {
+      "description": "Records and files that the task produced.",
+      "allOf": [{"$ref": "../common/v1.schema.json#/$defs/refs"}],
+      "default": []
+    },
+    "failure_reason": {"$ref": "../common/v1.schema.json#/$defs/reason"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "failed"}}},
+      "then": {"required": ["failure_reason"]},
+      "else": {"not": {"required": ["failure_reason"]}}
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": "agent-task/1",
+  "kind": "vetting",
+  "title": "Vet the candidates of run 3c6f9e2a",
+  "instructions": "Write one evidence assessment for each candidate of the run.",
+  "inputs": [
+    {
+      "kind": "run",
+      "id": "5f1e2d3c-4b5a-4968-8778-695a4b3c2d1e"
+    }
+  ],
+  "priority": 70,
+  "lease_seconds": 1800
+}

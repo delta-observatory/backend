@@ -4,10 +4,11 @@ This repository contains the stateless HTTP API for Delta Observatory.
 The API reads and writes PostgreSQL records and reads artifact files.
 It never calls a worker. Workers claim the jobs that the API inserts.
 The current scope is the TESS vertical slice: the `tess-spoc-index` and `tess-bls` methods.
+The API also keeps the research records of agent work: candidates, assessments, decisions, notes, and agent tasks.
 
 ## Contracts
 
-The API reads job and method-parameter schemas from `vendor/contracts/`.
+The API reads job, method-parameter, and research-record schemas from `vendor/contracts/`.
 `vendor/contracts/SOURCE` records the database repository commit of the copy.
 `vendor/migrations/` holds the migrations of the same commit. The tests apply them.
 Update both copies from a database commit or tag:
@@ -43,7 +44,7 @@ Each token belongs to one client in the `client` table: a person, an agent, or a
 |---|---|
 | `read` | Every read endpoint, and `POST /runs/estimate`. |
 | `run.submit` | `POST /runs`, and `POST /jobs/{id}/cancel` for the client's own runs. |
-| `record.write` | `POST /campaigns/{id}/fix-decisions` for an agent of the campaign. Research records will also use it. |
+| `record.write` | Research-record writes: candidates, assessments, decisions, notes, and agent tasks. `POST /campaigns/{id}/fix-decisions` for an agent of the campaign. |
 | `acquire` | Acquisition of new observations. No endpoint uses it yet. |
 | `identity.reveal` | `POST /campaigns/{id}/reveal`. |
 | `admin` | Client and campaign management, access events, dataset indexing, and cancellation of any job. |
@@ -115,6 +116,71 @@ A missing key means no limit. A request past a limit gives 403 and writes nothin
 `POST /runs/estimate` gives an agent the budget state after the run, and the budgets that the run would exceed.
 `GET /campaigns/{id}` gives the limit, use, and remaining amount of each budget.
 
+## Research records
+
+A client writes a record as a document of its contract in `vendor/contracts/records/`, for example `candidate/1`.
+The API checks the document against the schema and fills the schema defaults. It adds the writer, the time, and the campaign.
+The `contract` field names the version. Another version gives 422.
+Records do not change. A correction is a new record. An assessment or a decision names the record that it corrects in `supersedes`.
+
+| Record | Meaning |
+|---|---|
+| Candidate | A possible object or event: observations, evidence, kind, tier, summary, and an optional label. It holds no measured values. |
+| Assessment | One status on the `evidence` or `identity` axis, with basis, reason, and evidence. |
+| Decision | One advisory judgment: question, judge, model, packet checksum, policy, judged evidence status, recommended action, and reason. It sets no status and schedules nothing. |
+| Note | Free text about one or more records. A note takes the campaign of its subjects. |
+| Agent task | A unit of agent work in a campaign, with a lease. |
+
+The status of a candidate follows rule `candidate-status/1`: the newest assessment on each axis gives it.
+Without an assessment, the evidence status is `unreviewed` and the identity status is `unchecked`.
+Each candidate response gives `evidence_status` and `identity_status` with the assessment and its basis.
+
+Measurements, model judgments, evidence status, and identity status stay apart.
+A candidate refers to `measurement` rows and does not copy their values. `GET /candidates/{id}` resolves the referenced measurements, artifacts, and jobs.
+A decision with judge `model` is a model judgment. Its scores are judgments, not uncertainties or probabilities.
+An agent writes a judgment as a decision. It gives an evidence status only with an assessment of basis `model_judgment` that cites the decision.
+
+### References
+
+A reference names a platform record by `kind` and `id`, or an external file by `uri`, `sha256`, and `bytes`.
+The kinds are `campaign`, `observation`, `run`, `job`, `measurement`, `artifact`, `candidate`, `assessment`, `decision`, `note`, and `agent_task`.
+The API refuses a reference to a record that does not exist, and an artifact reference whose `sha256` is not the stored SHA-256.
+A record of a campaign refers only to records of the same campaign or to records without a campaign. The database checks the same rule.
+A `platform` candidate needs a measurement or a job in its evidence. A `lab` candidate can use external files only. An external file is a proposal, not platform evidence.
+
+### Campaign rules for records
+
+| Rule | API behaviour |
+|---|---|
+| Scope | An agent writes and reads only the records of its own campaign. Another campaign's record is "not found". A record without a campaign is not visible to agents. |
+| Approval | An agent writes records only in an approved campaign that is not closed. |
+| Judgments | An agent writes decisions with judge `model` and assessments with basis `model_judgment` only. An identity assessment from an agent gives 403: identity comparison is a worker method or a person's review. |
+| Decision freeze | After `fix-decisions`, a candidate, a decision, or an evidence assessment of the campaign gives 409 for every writer. Identity assessments, notes, and tasks continue. |
+| Close | After the close, a record of the campaign gives 409, except a person's note. The close cancels the queued and claimed tasks of the campaign. |
+| Blinding | When a campaign withholds labels, its agents see no identity assessments and no identity status, and a filter on them gives 422. A reference to a `reference_comparison` measurement or an identity assessment gives 422. A record that refers to such a value is hidden from the agents. The reveal ends this. |
+| Writer's blinding | Each decision records in `withheld_from_writer` the values that blinding withheld from its writer. |
+| Cohort guard | A reference to a protected observation, directly or through a measurement, job, or artifact, gives 422 for an agent and writes a refused access event. A record that refers to a protected observation is hidden from the agents. |
+| Budget | `GET /candidates/{id}` counts the observations of the candidate and of its resolved evidence as observation reads. |
+
+The API does not redact free text. A person's note, reason, or summary in a blinded campaign can contain withheld values.
+
+### Agent tasks
+
+Agents coordinate through agent tasks. The API keeps no task state in memory.
+
+1. A client with `record.write` writes a task in a campaign (`POST /tasks`). The task is `queued`. The inputs of a task must be visible to the agents of its campaign.
+2. A client claims the next task (`POST /tasks/claim`). The claim takes the highest priority first, then the oldest task. It uses `SELECT … FOR UPDATE SKIP LOCKED`, so parallel claims never return the same task.
+3. The claim returns `lease_id`. The holder extends the lease with `POST /tasks/{id}/heartbeat` before `lease_expires_at`.
+4. The holder ends the task with an `agent-task-report/1` document (`POST /tasks/{id}/report`): `complete` or `failed`, with outputs. Or it returns the task to the queue (`POST /tasks/{id}/release`).
+
+Only the client in `claimed_by` with the current `lease_id` can extend, release, or end a lease.
+Another client gets 403. An earlier lease of the same client gets 409.
+A claim also takes a claimed task whose lease expired, while attempts remain. That claim ends the earlier lease.
+A lease that expired, but that no other claim took, can still be extended.
+A task whose last lease expired becomes `failed` at the next claim in its campaign. The claim response lists it in `failed_on_expiry`.
+`lease_expired` in a task response shows an expired lease before that claim.
+A client cancels a queued or claimed task that it wrote. A client with `admin` cancels any task.
+
 ## Client parity
 
 The frontend and research agents use the same API. Each value that the frontend shows, and each rule that it applies, has an API operation.
@@ -127,6 +193,7 @@ Rules have versioned names. `GET /rules` describes them:
 | `target-query/1` | query | The search grammar of `GET /targets` and the frontend search field. |
 | `fold-window/1` | display | Window and bins of a fold view. A fold is a display calculation, not a stored result. |
 | `bls-grid/1` | estimate | Estimated BLS period grid size of one light curve. |
+| `candidate-status/1` | status | The newest assessment on each axis gives the current status of a candidate. The database view `candidate_status` applies it. |
 
 The frontend repeats three calculations while the user types or drags: the target query, the fold, and the parameter checks.
 `tests/vectors/` holds shared cases for these calculations. The API tests and the frontend tests both pass them.
@@ -145,7 +212,7 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /health` | Database status. The status code is 503 when the database is unavailable. No token. |
 | `GET /me` | The client of the token, with its permissions. |
 | `GET /clients`, `POST /clients`, `POST /clients/{id}/disable` | Client management (`admin`). `POST /clients` returns the token once. |
-| `GET /campaigns`, `GET /campaigns/{id}` | Campaigns with budget state and clients. An agent sees only its own campaign. |
+| `GET /campaigns`, `GET /campaigns/{id}` | Campaigns with budget state, clients, and record counts. An agent sees only its own campaign. |
 | `POST /campaigns`, `POST /campaigns/{id}/approve`, `POST /campaigns/{id}/budgets`, `POST /campaigns/{id}/close` | Campaign management (`admin`). |
 | `POST /campaigns/{id}/fix-decisions` | Fixes the decisions (`record.write` for an agent of the campaign, or `admin`). |
 | `POST /campaigns/{id}/reveal` | Records the reveal with a reason (`identity.reveal`). |
@@ -169,6 +236,16 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `POST /jobs/{id}/cancel` | Cancels a queued job of the client's own run, or any queued job with `admin`. Another state gives 409. |
 | `GET /artifacts/{id}` | Artifact metadata. |
 | `GET /artifacts/{id}/content` | The stored file. A `gzip` artifact has `Content-Encoding: gzip`. The ETag is the SHA-256. |
+| `POST /candidates` | Writes a `candidate/1` record (`record.write`). A person names the campaign with `campaign_id`. |
+| `GET /candidates` | Candidates with their statuses, newest first. Filters: `campaign_id`, `kind`, `tier`, `evidence_status`, `identity_status`, `observation_id`, `limit`, `offset`. |
+| `GET /candidates/{id}` | One candidate with its observations, resolved evidence, assessments, decisions, and notes. |
+| `POST /assessments`, `GET /assessments`, `GET /assessments/{id}` | Writes an `assessment/1` record, and lists assessments, newest first. Filters: `candidate_id`, `campaign_id`, `axis`. |
+| `POST /decisions`, `GET /decisions`, `GET /decisions/{id}` | Writes a `decision/1` record, and lists decisions, newest first. Filters: `candidate_id`, `campaign_id`, `action`. |
+| `POST /notes`, `GET /notes`, `GET /notes/{id}` | Writes a `note/1` record, and lists notes, newest first. Filters: `campaign_id`, and `subject_kind` with `subject_id`. |
+| `POST /tasks`, `GET /tasks`, `GET /tasks/{id}` | Writes an `agent-task/1` record, and lists tasks in claim order. Filters: `campaign_id`, `state`, `kind`. |
+| `POST /tasks/claim` | Claims the next task of the campaign. Body: optional `kinds`. `task` is null when no task is available. |
+| `POST /tasks/{id}/heartbeat`, `/release`, `/report` | Lease operations of the holder. Each body has `lease_id`. `/report` also has `report`, an `agent-task-report/1` document. |
+| `POST /tasks/{id}/cancel` | Cancels a queued or claimed task, with a reason. |
 
 ### Run requests
 
@@ -207,6 +284,10 @@ The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
 `test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
 `test_campaigns.py` checks that blinding, the cohort guard, budgets, and the lifecycle stop prohibited agent actions.
+`test_records.py` checks the record documents, the separation of measurements, judgments, and statuses, the decision freeze, campaign isolation, blinded responses, reference integrity, and permissions.
+`test_tasks.py` checks claim order, parallel claims, and a claim next to a locked task.
+It also checks lease expiry and recovery, lease ownership, release, cancellation, and the campaign lifecycle of tasks.
+`test_migrations.py` applies migration 0004 to a database that holds records of the earlier migrations.
 `test_rules.py` checks the rules against `tests/vectors/`. `test_parity_api.py` checks the client-parity endpoints, including the SQL form of the target query against the vectors.
 
 ```bash

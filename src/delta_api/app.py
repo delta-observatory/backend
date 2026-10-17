@@ -18,10 +18,10 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, db, fold as fold_module, query as query_module, settings as settings_module
+from . import __version__, auth, db, fold as fold_module, query as query_module, records, settings as settings_module
 from .auth import Actor
 from .contracts import Contracts, ValidationFailure, parameters_sha256
-from .rules import BLS_GRID, DEFAULT_RUN, FOLD_WINDOW, PERIOD_AGREEMENT
+from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, PERIOD_AGREEMENT
 from .cohorts import CohortRegister
 from . import policy as policy_module
 from .policy import Guard, Policy, policy_for, redact_observation, redact_target
@@ -173,7 +173,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     # Campaigns ----------------------------------------------------------
 
     def campaign_view(conn, row) -> dict:
-        """A campaign with its budget state. Waiting jobs count at the median seconds per job of their method."""
+        """A campaign with its budget state and its record counts. Waiting jobs count at the median seconds per job
+        of their method."""
         rate = conn.execute("""
             SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (j.result -> 'resources' ->> 'elapsed_seconds')::float8) AS s
             FROM job j
@@ -182,7 +183,18 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                   SELECT r.method_id FROM run r WHERE r.campaign_id = %s)""", [row['id']]).fetchone()
         clients = conn.execute('SELECT id, name, kind, disabled_at FROM client WHERE campaign_id = %s ORDER BY name',
                                [row['id']]).fetchall()
-        return {**row, 'budget_state': policy_module.budget_state(conn, row, rate and rate['s']), 'clients': clients}
+        counts = conn.execute("""
+            SELECT (SELECT count(*) FROM candidate WHERE campaign_id = %(c)s) AS candidates,
+                   (SELECT count(*) FROM assessment a JOIN candidate c ON c.id = a.candidate_id
+                     WHERE c.campaign_id = %(c)s) AS assessments,
+                   (SELECT count(*) FROM decision d JOIN candidate c ON c.id = d.candidate_id
+                     WHERE c.campaign_id = %(c)s) AS decisions,
+                   (SELECT count(*) FROM note WHERE campaign_id = %(c)s) AS notes,
+                   (SELECT coalesce(jsonb_object_agg(state, n), '{}'::jsonb) FROM
+                       (SELECT state, count(*) AS n FROM agent_task WHERE campaign_id = %(c)s GROUP BY state) t) AS tasks
+            """, {'c': row['id']}).fetchone()
+        return {**row, 'budget_state': policy_module.budget_state(conn, row, rate and rate['s']), 'clients': clients,
+                'records': counts}
 
     def campaign_row(conn, campaign_id, actor: Actor) -> dict:
         row = conn.execute('SELECT * FROM campaign WHERE id = %s', [campaign_id]).fetchone()
@@ -322,9 +334,10 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     @app.get('/api/rules', dependencies=[Depends(need('read'))])
     def list_rules():
-        """Named rules that clients apply to stored values: status, default run, query grammar, fold, estimate."""
+        """Named rules that clients apply to stored values: status, default run, query grammar, fold, estimate,
+        and candidate status."""
         return [PERIOD_AGREEMENT.describe(), DEFAULT_RUN.describe(), query_module.describe(),
-                FOLD_WINDOW.describe(), BLS_GRID.describe()]
+                FOLD_WINDOW.describe(), BLS_GRID.describe(), CANDIDATE_STATUS.describe()]
 
     # Datasets -----------------------------------------------------------
 
@@ -859,6 +872,9 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         if not target.is_file():
             raise HTTPException(404, 'artifact file is missing')
         return FileResponse(target, media_type=row['media_type'], headers=headers)
+
+    # Research records: candidates, assessments, decisions, notes, and agent tasks.
+    app.include_router(records.router(connection=connection, need=need, guard=guard, contracts=contracts), prefix='/api')
 
     return app
 

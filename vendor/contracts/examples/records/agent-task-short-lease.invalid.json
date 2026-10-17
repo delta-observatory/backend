@@ -1,0 +1,6 @@
+{
+  "contract": "agent-task/1",
+  "kind": "vetting",
+  "title": "Too short a lease",
+  "lease_seconds": 10
+}

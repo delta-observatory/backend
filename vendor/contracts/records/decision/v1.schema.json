@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/decision/v1.schema.json",
+  "title": "Decision record, version 1",
+  "description": "One judgment about a candidate: the question, the supplied evidence and its checksum, the judge, the response, the policy, and the recommended action. A model judgment is not a measurement, an uncertainty, or a probability of discovery. A decision does not set the status of the candidate. An assessment with basis model_judgment can cite it. The writer, the time, and the values that blinding withheld from the writer come from the request.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "candidate_id", "question", "mode", "judge", "packet", "policy", "judged_evidence_status", "action", "reason", "evidence"],
+  "properties": {
+    "contract": {"const": "decision/1"},
+    "candidate_id": {"$ref": "../common/v1.schema.json#/$defs/uuid"},
+    "assessment_id": {
+      "description": "Optional. An assessment of the same candidate that the judgment used.",
+      "$ref": "../common/v1.schema.json#/$defs/uuid"
+    },
+    "question": {
+      "description": "The versioned question that the judge answered, for example triage version 1.",
+      "$ref": "../common/v1.schema.json#/$defs/versioned_id"
+    },
+    "mode": {
+      "description": "advisory: the decision records a recommendation and schedules nothing. Automatic modes need R6 evaluation and are not part of version 1.",
+      "const": "advisory"
+    },
+    "judge": {
+      "description": "model: a language model or another trained model made the judgment. A research agent always writes model judgments. person: a person made the judgment.",
+      "enum": ["model", "person"]
+    },
+    "model": {
+      "description": "The model that made the judgment, or the reason that it is unknown.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "provider", "id"],
+          "properties": {
+            "kind": {"const": "identified"},
+            "provider": {"type": "string", "minLength": 1, "maxLength": 200},
+            "id": {"type": "string", "minLength": 1, "maxLength": 200}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "unavailable"}, "reason": {"$ref": "../common/v1.schema.json#/$defs/reason"}}
+        }
+      ]
+    },
+    "packet": {
+      "description": "The SHA-256 of the evidence packet that the judge received, or the reason that it is unknown.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sha256"],
+          "properties": {"kind": {"const": "sha256"}, "sha256": {"$ref": "../common/v1.schema.json#/$defs/sha256"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "unavailable"}, "reason": {"$ref": "../common/v1.schema.json#/$defs/reason"}}
+        }
+      ]
+    },
+    "policy": {
+      "description": "The versioned decision policy, or the reason that none applies.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "id", "version"],
+          "properties": {
+            "kind": {"const": "identified"},
+            "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+            "version": {"type": "integer", "minimum": 1}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "unavailable"}, "reason": {"$ref": "../common/v1.schema.json#/$defs/reason"}}
+        }
+      ]
+    },
+    "judged_evidence_status": {
+      "description": "The evidence status that the judge gives. It is part of the judgment. It is not the status of the candidate.",
+      "enum": ["supported", "ambiguous", "rejected"]
+    },
+    "action": {
+      "description": "The recommended next action. Advisory mode schedules nothing.",
+      "enum": ["discard", "request_more_data", "request_pixel_check", "request_vetting", "request_human_review", "no_action"]
+    },
+    "reason": {"$ref": "../common/v1.schema.json#/$defs/text"},
+    "evidence": {
+      "description": "The evidence that the judge received.",
+      "allOf": [{"$ref": "../common/v1.schema.json#/$defs/refs"}],
+      "minItems": 1
+    },
+    "response": {
+      "description": "Optional. The provider response, as received.",
+      "type": "object"
+    },
+    "scores": {
+      "description": "Optional. Numbers that the judge returned. They are model judgments, not measurement uncertainties or probabilities of discovery.",
+      "type": "object",
+      "maxProperties": 50,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"type": "number"}
+    },
+    "supersedes": {
+      "description": "An earlier decision about the same candidate that this decision corrects.",
+      "$ref": "../common/v1.schema.json#/$defs/uuid"
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"judge": {"const": "model"}}, "required": ["judge"]},
+      "then": {"required": ["model"]},
+      "else": {"not": {"required": ["model"]}}
+    }
+  ]
+}

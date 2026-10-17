@@ -120,7 +120,23 @@ class BlsGrid:
                            'The worker records the actual grid size as diagnostics.grid_trials.'}
 
 
+@dataclass(frozen=True)
+class CandidateStatus:
+    """Current status of a candidate. The database view candidate_status applies this rule."""
+    id: str = 'candidate-status/1'
+
+    def describe(self) -> dict:
+        return {'id': self.id, 'kind': 'status',
+                'summary': 'The newest assessment on each axis gives the current status of a candidate. '
+                           'Without an assessment, the evidence status is unreviewed and the identity status is unchecked. '
+                           'A decision does not change a status. An assessment with basis model_judgment cites a decision.',
+                'axes': {'evidence': ['unreviewed', 'supported', 'ambiguous', 'rejected'],
+                         'identity': ['unchecked', 'matched', 'unmatched', 'ambiguous']},
+                'requires_labels': {'evidence': False, 'identity': True}}
+
+
 PERIOD_AGREEMENT = PeriodAgreement()
+CANDIDATE_STATUS = CandidateStatus()
 DEFAULT_RUN = DefaultRun()
 FOLD_WINDOW = FoldWindow()
 BLS_GRID = BlsGrid()

@@ -1,0 +1,14 @@
+{
+  "contract": "note/1",
+  "body": "C001 needs a second sector before any further triage.",
+  "subjects": [
+    {
+      "kind": "candidate",
+      "id": "6d2b1f0e-6f43-4f25-9d0c-3f8a1e2b7c11"
+    },
+    {
+      "kind": "decision",
+      "id": "0b7d3c55-3a2e-4c8e-8f61-2d9e4a7f1b02"
+    }
+  ]
+}

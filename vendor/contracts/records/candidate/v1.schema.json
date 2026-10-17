@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/candidate/v1.schema.json",
+  "title": "Candidate record, version 1",
+  "description": "A possible object or event, with its observations and its evidence. A candidate holds no measured values and no status. Its values are the referenced measurements. Its evidence status and identity status come from assessment records. The campaign, writer, and time come from the request.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "kind", "tier", "summary", "observation_ids", "evidence"],
+  "properties": {
+    "contract": {"const": "candidate/1"},
+    "kind": {"enum": ["transit_signal", "moving_object"]},
+    "tier": {
+      "description": "platform: the evidence includes measurements or jobs of versioned worker methods. lab: the evidence comes from agent code outside the platform. A lab candidate is a proposal, not platform evidence.",
+      "enum": ["platform", "lab"]
+    },
+    "label": {
+      "description": "Optional short name, unique in the campaign, for example C001. It must not contain a catalog identity.",
+      "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "observation_ids": {
+      "type": "array", "minItems": 1, "maxItems": 1000, "uniqueItems": true,
+      "items": {"$ref": "../common/v1.schema.json#/$defs/uuid"}
+    },
+    "evidence": {
+      "allOf": [{"$ref": "../common/v1.schema.json#/$defs/refs"}],
+      "minItems": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"tier": {"const": "platform"}}, "required": ["tier"]},
+      "then": {
+        "properties": {
+          "evidence": {
+            "contains": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["measurement", "job"]}}}
+          }
+        }
+      }
+    }
+  ]
+}

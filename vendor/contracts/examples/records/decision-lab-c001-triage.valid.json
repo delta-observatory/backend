@@ -1,0 +1,34 @@
+{
+  "contract": "decision/1",
+  "candidate_id": "6d2b1f0e-6f43-4f25-9d0c-3f8a1e2b7c11",
+  "question": {
+    "id": "triage",
+    "version": 1
+  },
+  "mode": "advisory",
+  "judge": "model",
+  "model": {
+    "kind": "unavailable",
+    "reason": "The runtime does not expose the exact provider model identifier."
+  },
+  "packet": {
+    "kind": "sha256",
+    "sha256": "f25c1000887b6f728b17d63fe81aca5f37a89a22c9f1c50e503fa35673dfd708"
+  },
+  "policy": {
+    "kind": "unavailable",
+    "reason": "No decision policy is defined for the lab pass."
+  },
+  "judged_evidence_status": "rejected",
+  "action": "discard",
+  "reason": "The folded dip is broad and smoothly varying. Its duration exceeds the central estimate by six times.",
+  "evidence": [
+    {
+      "kind": "external",
+      "uri": "lab:delta-lab/runs/triage/packets/C001",
+      "sha256": "f25c1000887b6f728b17d63fe81aca5f37a89a22c9f1c50e503fa35673dfd708",
+      "bytes": 574634,
+      "description": "Anonymous evidence packet: evidence.png and packet.json."
+    }
+  ]
+}
