@@ -134,6 +134,12 @@ Records do not change. A correction is a new record. An assessment or a decision
 The status of a candidate follows rule `candidate-status/1`: the newest assessment on each axis gives it.
 Without an assessment, the evidence status is `unreviewed` and the identity status is `unchecked`.
 Each candidate response gives `evidence_status` and `identity_status` with the assessment and its basis.
+A status is null when its source assessment is hidden from the client.
+Status filters exclude that candidate on the affected axis. List totals follow the same rule.
+The API does not substitute an earlier assessment for a hidden current assessment.
+
+Agent reads of research records require an approved campaign that is not closed.
+The API returns 403 for record lists and details outside that period.
 
 Measurements, model judgments, evidence status, and identity status stay apart.
 A candidate refers to `measurement` rows and does not copy their values. `GET /candidates/{id}` resolves the referenced measurements, artifacts, and jobs.
@@ -178,6 +184,8 @@ Another client gets 403. An earlier lease of the same client gets 409.
 A claim also takes a claimed task whose lease expired, while attempts remain. That claim ends the earlier lease.
 A lease that expired, but that no other claim took, can still be extended.
 A task whose last lease expired becomes `failed` at the next claim in its campaign. The claim response lists it in `failed_on_expiry`.
+Agent claims exclude hidden tasks from selection and expiry processing. Those tasks retain their state and attempt count.
+The API prepares the claim response before it commits the claim, using the same visibility rules as task reads.
 `lease_expired` in a task response shows an expired lease before that claim.
 A client cancels a queued or claimed task that it wrote. A client with `admin` cancels any task.
 

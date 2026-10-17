@@ -322,3 +322,71 @@ def test_record_permissions(client, conn, artifact_root):
     assert made.status_code == 201
     refused = client.get(f'/api/candidates/{made.json()["id"]}', headers=tight)
     assert refused.status_code == 403 and 'observation budget' in refused.json()['detail']
+
+
+@pytest.mark.parametrize('axis,hidden_source', [('evidence', 'labels'), ('evidence', 'evaluation'), ('identity', 'evaluation')])
+def test_candidate_status_does_not_expose_a_hidden_assessment(client, conn, artifact_root, cohorts_path, axis, hidden_source):
+    oid, job_id, _, m = platform_candidate(conn, artifact_root, tic=111)
+    campaign_id, agent = agent_in(conn, 'status-reader', blinding='labels_identity' if hidden_source == 'labels' else 'open')
+    c = client.post('/api/candidates', headers=agent,
+                    json=candidate(oid, [{'kind': 'job', 'id': str(job_id)}])).json()
+    if hidden_source == 'labels':
+        evidence = [{'kind': 'measurement', 'id': m[('reference_comparison', 'recovered')]}]
+    else:
+        protected = add_observation(conn, tic=222)
+        evidence = [{'kind': 'observation', 'id': str(protected)}]
+        write_register(cohorts_path, [('eval-status', 'evaluation', [], ['TIC:222'])])
+    status_value = 'supported' if axis == 'evidence' else 'matched'
+    status_key = f'{axis}_status'
+    assessment = client.post('/api/assessments', json={
+        'contract': 'assessment/1', 'candidate_id': c['id'], 'axis': axis, 'status': status_value,
+        'basis': 'review', 'reason': 'The cited evidence supports the signal.', 'evidence': evidence})
+    assert assessment.status_code == 201, assessment.text
+    aid = assessment.json()['id']
+    assert client.get(f'/api/assessments/{aid}', headers=agent).status_code == 404
+    detail = client.get(f'/api/candidates/{c["id"]}', headers=agent)
+    assert detail.status_code == 200
+    assert detail.json()[status_key] is None
+    assert detail.json()['assessments'] == []
+    listed = client.get('/api/candidates', headers=agent).json()
+    assert listed['total'] == 1 and listed['items'][0][status_key] is None
+    # Neither the matching filter nor any alternative status reveals the withheld value.
+    statuses = ('supported', 'ambiguous', 'rejected', 'unreviewed') if axis == 'evidence' else ('matched', 'unmatched', 'ambiguous', 'unchecked')
+    for status in statuses:
+        filtered = client.get('/api/candidates', headers=agent, params={status_key: status}).json()
+        assert filtered['total'] == 0 and filtered['items'] == []
+    assert client.get(f'/api/candidates/{c["id"]}').json()[status_key]['status'] == status_value
+    if hidden_source == 'labels':
+        assert client.post(f'/api/campaigns/{campaign_id}/fix-decisions', headers=agent).status_code == 200
+        assert client.post(f'/api/campaigns/{campaign_id}/reveal', json={'reason': 'Review complete.'}).status_code == 200
+        revealed = client.get('/api/candidates', headers=agent, params={'evidence_status': 'supported'}).json()
+        assert revealed['total'] == 1
+        assert revealed['items'][0]['evidence_status']['assessment_id'] == aid
+
+
+def test_all_research_record_reads_require_an_active_agent_campaign(client, conn, artifact_root):
+    campaign_id, agent = agent_in(conn, 'record-reader', approved=False)
+    task = client.post('/api/tasks', params={'campaign_id': str(campaign_id)}, json={
+        'contract': 'agent-task/1', 'kind': 'review', 'title': 'Review the evidence.'})
+    assert task.status_code == 201
+    collections = ('candidates', 'assessments', 'decisions', 'notes', 'tasks')
+    for collection in collections:
+        assert client.get(f'/api/{collection}', headers=agent).status_code == 403
+        assert client.get(f'/api/{collection}/{task.json()["id"]}', headers=agent).status_code == 403
+    assert client.post(f'/api/campaigns/{campaign_id}/approve', json={'campaign_file_sha256': SHA}).status_code == 200
+    oid, job_id, _, _ = platform_candidate(conn, artifact_root)
+    c = client.post('/api/candidates', headers=agent,
+                    json=candidate(oid, [{'kind': 'job', 'id': str(job_id)}])).json()
+    d = client.post('/api/decisions', headers=agent, json=decision(c['id'])).json()
+    a = client.post('/api/assessments', headers=agent, json=judged(c['id'], d['id'])).json()
+    n = client.post('/api/notes', headers=agent, json={
+        'contract': 'note/1', 'body': 'Review complete.', 'subjects': [{'kind': 'candidate', 'id': c['id']}]}).json()
+    records = dict(zip(collections, (c, a, d, n, task.json())))
+    for collection, record in records.items():
+        assert client.get(f'/api/{collection}', headers=agent).status_code == 200
+        assert client.get(f'/api/{collection}/{record["id"]}', headers=agent).status_code == 200
+    assert client.post(f'/api/campaigns/{campaign_id}/close').status_code == 200
+    for collection, record in records.items():
+        assert client.get(f'/api/{collection}', headers=agent).status_code == 403
+        assert client.get(f'/api/{collection}/{record["id"]}', headers=agent).status_code == 403
+        assert client.get(f'/api/{collection}/{record["id"]}').status_code == 200

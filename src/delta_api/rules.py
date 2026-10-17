@@ -129,6 +129,7 @@ class CandidateStatus:
         return {'id': self.id, 'kind': 'status',
                 'summary': 'The newest assessment on each axis gives the current status of a candidate. '
                            'Without an assessment, the evidence status is unreviewed and the identity status is unchecked. '
+                           'A status is null when its source assessment is hidden from the client. '
                            'A decision does not change a status. An assessment with basis model_judgment cites a decision.',
                 'axes': {'evidence': ['unreviewed', 'supported', 'ambiguous', 'rejected'],
                          'identity': ['unchecked', 'matched', 'unmatched', 'ambiguous']},

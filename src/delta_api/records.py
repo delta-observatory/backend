@@ -84,6 +84,7 @@ class View:
     """What one client sees of the records: its campaign, the withheld values, and the protected observations."""
 
     def __init__(self, conn, pol: Policy, guard):
+        pol.require_active('research records')
         self.pol = pol
         self.agent = pol.agent
         self.protected = list(guard.protected(conn, pol)) if pol.agent else []
@@ -234,11 +235,22 @@ def actor_of(row: dict) -> dict:
 
 CANDIDATE_SELECT = """
     SELECT c.*, s.evidence_status, s.evidence_assessment_id, s.evidence_basis,
-           s.identity_status, s.identity_assessment_id, s.identity_basis,
+           identity_s.identity_status, identity_s.identity_assessment_id, identity_s.identity_basis,
            w.name AS actor_name, w.kind AS actor_kind,
            ARRAY(SELECT observation_id FROM candidate_observation co WHERE co.candidate_id = c.id
                  ORDER BY observation_id) AS observation_ids
-    FROM candidate c JOIN candidate_status s ON s.candidate_id = c.id JOIN client w ON w.id = c.created_by"""
+    FROM candidate c JOIN candidate_status stored ON stored.candidate_id = c.id
+    LEFT JOIN LATERAL (
+        SELECT stored.evidence_status, stored.evidence_assessment_id, stored.evidence_basis
+        WHERE NOT EXISTS (SELECT 1 FROM assessment status_source
+                          WHERE status_source.id = stored.evidence_assessment_id AND {evidence_hidden})
+    ) s ON true
+    LEFT JOIN LATERAL (
+        SELECT stored.identity_status, stored.identity_assessment_id, stored.identity_basis
+        WHERE NOT EXISTS (SELECT 1 FROM assessment status_source
+                          WHERE status_source.id = stored.identity_assessment_id AND {identity_hidden})
+    ) identity_s ON true
+    JOIN client w ON w.id = c.created_by"""
 ASSESSMENT_SELECT = """
     SELECT a.*, c.campaign_id, w.name AS actor_name, w.kind AS actor_kind
     FROM assessment a JOIN candidate c ON c.id = a.candidate_id JOIN client w ON w.id = a.created_by"""
@@ -253,6 +265,12 @@ TASK_SELECT = """
     FROM agent_task t JOIN client w ON w.id = t.created_by LEFT JOIN client h ON h.id = t.claimed_by"""
 
 
+def candidate_select(view: View) -> str:
+    """Mask a status whose source assessment is hidden, including in list filters and counts."""
+    hidden = view.hidden('assessment', 'status_source')
+    return CANDIDATE_SELECT.format(evidence_hidden=hidden, identity_hidden=hidden)
+
+
 def candidate_out(row: dict, links: dict, view: View) -> dict:
     labels_visible = view.pol.labels_visible
     return {
@@ -261,10 +279,10 @@ def candidate_out(row: dict, links: dict, view: View) -> dict:
         'observation_ids': row['observation_ids'], 'evidence': links.get(row['id'], {}).get('evidence', []),
         'status_rule': 'candidate-status/1',
         'evidence_status': {'status': row['evidence_status'], 'assessment_id': row['evidence_assessment_id'],
-                            'basis': row['evidence_basis']},
+                            'basis': row['evidence_basis']} if row['evidence_status'] is not None else None,
         # Identity comparison uses known-object labels.
         'identity_status': {'status': row['identity_status'], 'assessment_id': row['identity_assessment_id'],
-                            'basis': row['identity_basis']} if labels_visible else None,
+                            'basis': row['identity_basis']} if labels_visible and row['identity_status'] is not None else None,
         'actor': actor_of(row), 'created_at': row['created_at'], 'withheld': view.withheld(),
     }
 
@@ -452,7 +470,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         scope, args = read_scope(view, campaign_id)
         where = [scope.format(alias='c').removeprefix(' AND ')] if scope else []
         for column, value in (('c.kind', kind), ('c.tier', tier), ('s.evidence_status', evidence_status),
-                              ('s.identity_status', identity_status)):
+                              ('identity_s.identity_status', identity_status)):
             if value is not None:
                 key = column.split('.')[1]
                 where.append(f'{column} = %({key})s')
@@ -460,7 +478,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         if observation_id is not None:
             where.append('EXISTS (SELECT 1 FROM candidate_observation f WHERE f.candidate_id = c.id AND f.observation_id = %(obs)s)')
             args['obs'] = observation_id
-        total, rows = page(conn, view, 'candidate', CANDIDATE_SELECT, 'c', 'c.campaign_id', where, args, limit, offset,
+        total, rows = page(conn, view, 'candidate', candidate_select(view), 'c', 'c.campaign_id', where, args, limit, offset,
                            'c.created_at DESC, c.id')
         links = links_of(conn, 'candidate', [r['id'] for r in rows])
         return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.withheld(),
@@ -488,7 +506,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         return out
 
     def candidate_record(conn, view: View, candidate_id) -> dict:
-        row = one(conn, view, 'candidate', CANDIDATE_SELECT, 'c', candidate_id, 'c.campaign_id')
+        row = one(conn, view, 'candidate', candidate_select(view), 'c', candidate_id, 'c.campaign_id')
         return candidate_out(row, links_of(conn, 'candidate', [row['id']]), view)
 
     def resolve(conn, refs: list[dict]) -> tuple[dict, list]:
@@ -724,6 +742,9 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
     @api.get('/tasks/{task_id}')
     def get_task(task_id: uuid.UUID, conn: Conn, actor: Reader):
         view = View(conn, policy_for(conn, actor), guard)
+        return task_record(conn, view, task_id)
+
+    def task_record(conn, view: View, task_id) -> dict:
         row = one(conn, view, 'agent_task', TASK_SELECT, 't', task_id, 't.campaign_id')
         return task_out(row, links_of(conn, 'agent_task', [row['id']]))
 
@@ -735,27 +756,32 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         A task whose lease expired on its last attempt becomes failed. "task" is null when no task is available."""
         pol = policy_for(conn, actor)
         campaign = write_campaign(conn, actor, pol, campaign_id, 'a task claim', required=True)
+        view = View(conn, pol, guard)
+        params = {**view.params, 'actor': actor.id, 'campaign': campaign['id'], 'kinds': request.kinds,
+                  'reason': TASK_FAILED_REASON}
+        task = None
         with conn.transaction():
-            failed = conn.execute("""
-                UPDATE agent_task SET state = 'failed', finished_at = now(), reason = %s, lease_expires_at = NULL
-                WHERE campaign_id = %s AND state = 'claimed' AND lease_expires_at < now() AND attempts >= max_attempts
-                RETURNING id""", [TASK_FAILED_REASON, campaign['id']]).fetchall()
-        with conn.transaction():
-            row = conn.execute("""
+            failed = conn.execute(f"""
+                UPDATE agent_task t SET state = 'failed', finished_at = now(), reason = %(reason)s, lease_expires_at = NULL
+                WHERE campaign_id = %(campaign)s AND state = 'claimed' AND lease_expires_at < now() AND attempts >= max_attempts
+                  AND NOT {view.hidden('agent_task', 't')}
+                RETURNING id""", params).fetchall()
+            row = conn.execute(f"""
                 UPDATE agent_task SET state = 'claimed', attempts = attempts + 1, claimed_by = %(actor)s, claimed_at = now(),
                        lease_id = gen_random_uuid(), lease_expires_at = now() + make_interval(secs => lease_seconds)
                 WHERE id = (
-                    SELECT id FROM agent_task
+                    SELECT id FROM agent_task t
                     WHERE campaign_id = %(campaign)s
+                      AND NOT {view.hidden('agent_task', 't')}
                       AND (state = 'queued' OR (state = 'claimed' AND lease_expires_at < now() AND attempts < max_attempts))
                       AND (%(kinds)s::text[] IS NULL OR kind = ANY(%(kinds)s::text[]))
                     ORDER BY priority DESC, created_at, id
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1)
-                RETURNING id, lease_id""", {'actor': actor.id, 'campaign': campaign['id'], 'kinds': request.kinds}).fetchone()
-        task = None
-        if row is not None:
-            task = {**get_task(row['id'], conn, actor), 'lease_id': row['lease_id']}
+                RETURNING id, lease_id""", params).fetchone()
+            if row is not None:
+                # Use the same visibility snapshot and finish the response before committing the claim.
+                task = {**task_record(conn, view, row['id']), 'lease_id': row['lease_id']}
         return {'task': task, 'failed_on_expiry': [r['id'] for r in failed]}
 
     def lease_update(conn, task_id, actor: Actor, lease_id, assignments: str, args: list) -> dict:

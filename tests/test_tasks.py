@@ -6,7 +6,7 @@ import psycopg
 from psycopg.rows import dict_row
 import pytest
 
-from conftest import add_campaign, add_observation, token_for
+from conftest import add_campaign, add_observation, token_for, write_register
 
 
 def task(title, **extra) -> dict:
@@ -190,3 +190,26 @@ def test_tasks_follow_the_campaign(client, conn):
     late = client.post('/api/tasks', params={'campaign_id': str(blind)}, json=task('late'))
     assert late.status_code == 409 and 'closed' in late.json()['detail']
     assert client.get(f'/api/campaigns/{blind}').json()['records']['tasks'] == {'cancelled': 2}
+
+
+@pytest.mark.parametrize('initial_state', ['queued', 'expired', 'exhausted'])
+def test_claims_skip_hidden_tasks_without_changing_them(client, conn, campaign, cohorts_path, initial_state):
+    (agent,) = agents(conn, campaign, 'agent-protected')
+    oid = add_observation(conn, tic=111)
+    hidden = make(client, campaign, 'protected', priority=99,
+                  max_attempts=1 if initial_state == 'exhausted' else 3,
+                  inputs=[{'kind': 'observation', 'id': str(oid)}])
+    if initial_state != 'queued':
+        assert client.post('/api/tasks/claim', headers=agent, json={}).json()['task']['id'] == hidden['id']
+        expire(conn, hidden['id'])
+    before = conn.execute('SELECT * FROM agent_task WHERE id = %s', [hidden['id']]).fetchone()
+    write_register(cohorts_path, [('eval-task', 'evaluation', [], ['TIC:111'])])
+    visible = make(client, campaign, 'visible', priority=10)
+    assert [t['id'] for t in client.get('/api/tasks', headers=agent).json()['items']] == [visible['id']]
+    claimed = client.post('/api/tasks/claim', headers=agent, json={})
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()['task']['id'] == visible['id']
+    assert claimed.json()['failed_on_expiry'] == []
+    empty = client.post('/api/tasks/claim', headers=agent, json={})
+    assert empty.status_code == 200 and empty.json() == {'task': None, 'failed_on_expiry': []}
+    assert conn.execute('SELECT * FROM agent_task WHERE id = %s', [hidden['id']]).fetchone() == before
