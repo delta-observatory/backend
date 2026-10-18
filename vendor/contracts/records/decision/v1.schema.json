@@ -8,6 +8,7 @@
   "required": ["contract", "candidate_id", "question", "mode", "judge", "packet", "policy", "judged_evidence_status", "action", "reason", "evidence"],
   "properties": {
     "contract": {"const": "decision/1"},
+    "import_key": {"$ref": "../common/v1.schema.json#/$defs/import_key"},
     "candidate_id": {"$ref": "../common/v1.schema.json#/$defs/uuid"},
     "assessment_id": {
       "description": "Optional. An assessment of the same candidate that the judgment used.",

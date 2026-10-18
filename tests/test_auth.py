@@ -76,9 +76,12 @@ def test_writes_record_their_actor(client, conn):
     assert run['client_id'] == agent_id
     assert client.get('/api/runs').json()[0]['client_id'] == agent_id
     # A client cancels only the jobs of its own runs. Richard has "admin" and can cancel any job.
-    other = token_for(conn, 'agent-b')
+    # An agent of the same campaign sees the run but cannot cancel its jobs. Another campaign's agent does not see it.
     job_id = run['jobs'][0]['id']
-    assert client.post(f'/api/jobs/{job_id}/cancel', headers=other).status_code == 403
+    colleague = token_for(conn, 'agent-c', campaign_id=uuid.UUID(str(run['campaign_id'])))
+    assert client.post(f'/api/jobs/{job_id}/cancel', headers=colleague).status_code == 403
+    other = token_for(conn, 'agent-b')
+    assert client.post(f'/api/jobs/{job_id}/cancel', headers=other).status_code == 404
     cancelled = client.post(f'/api/jobs/{job_id}/cancel', headers=agent).json()
     assert cancelled['cancelled_by'] == agent_id
     index = client.post('/api/datasets/tess-spoc-light-curves/index').json()

@@ -13,7 +13,7 @@ import uuid
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -21,10 +21,10 @@ from pydantic import BaseModel, Field
 from . import __version__, auth, db, fold as fold_module, query as query_module, records, settings as settings_module
 from .auth import Actor
 from .contracts import Contracts, ValidationFailure, parameters_sha256
-from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, PERIOD_AGREEMENT
+from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
-from . import policy as policy_module
-from .policy import Guard, Policy, policy_for, redact_observation, redact_target
+from . import exports as exports_module, policy as policy_module
+from .policy import Guard, Policy, policy_for, redact_error, redact_observation, redact_target
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
 INDEX_METHOD = ('tess-spoc-index', 1)
@@ -39,6 +39,10 @@ class RunRequest(BaseModel):
     method: MethodRef
     parameters: dict = Field(default_factory=dict)
     observation_ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+    label: str | None = Field(default=None, max_length=200)
+
+
+class RetryRequest(BaseModel):
     label: str | None = Field(default=None, max_length=200)
 
 
@@ -97,6 +101,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return check
 
     Reader = Annotated[Actor, Depends(need('read'))]
+    records_api = records.router(connection=connection, need=need, guard=guard, contracts=contracts)
     Submitter = Annotated[Actor, Depends(need('run.submit'))]
     Admin = Annotated[Actor, Depends(need('admin'))]
     RecordWriter = Annotated[Actor, Depends(need('record.write'))]
@@ -335,14 +340,18 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     @app.get('/api/rules', dependencies=[Depends(need('read'))])
     def list_rules():
         """Named rules that clients apply to stored values: status, default run, query grammar, fold, estimate,
-        and candidate status."""
+        candidate status, run comparison, and the free text that blinded agents receive."""
         return [PERIOD_AGREEMENT.describe(), DEFAULT_RUN.describe(), query_module.describe(),
-                FOLD_WINDOW.describe(), BLS_GRID.describe(), CANDIDATE_STATUS.describe()]
+                FOLD_WINDOW.describe(), BLS_GRID.describe(), CANDIDATE_STATUS.describe(), RUN_COMPARISON.describe(),
+                FREE_TEXT.describe()]
 
     # Datasets -----------------------------------------------------------
 
-    @app.get('/api/datasets', dependencies=[Depends(need('read'))])
-    def list_datasets(conn: Conn):
+    @app.get('/api/datasets')
+    def list_datasets(conn: Conn, actor: Reader):
+        """Datasets with state, findings, and observation counts. Without identity, an agent gets path counts, not paths."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a dataset list')
         rows = conn.execute("""
             SELECT d.id, d.state, d.findings, d.last_indexed_at,
                    COALESCE(jsonb_object_agg(o.state, o.n) FILTER (WHERE o.state IS NOT NULL), '{}'::jsonb)
@@ -352,6 +361,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                    ON o.dataset_id = d.id
             GROUP BY d.id
             ORDER BY d.id""").fetchall()
+        for row in rows:
+            row['findings'] = policy_module.redact_findings(row['findings'], pol)
         return rows
 
     @app.post('/api/datasets/{dataset_id}/index', status_code=202)
@@ -439,6 +450,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         """Ready observations with sky position, magnitude, labels, the run's search values, and a display status."""
         pol = policy_for(conn, actor)
         pol.require_active('a target list')
+        if run_id is not None:
+            visible_run(conn, pol, run_id)
         labels_visible, identity_visible = pol.labels_visible, pol.identity_visible
         parsed = query_module.parse(q)
         errors = [{'loc': ['query', 'q'], 'msg': m} for m in parsed.errors]
@@ -534,6 +547,23 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Runs ---------------------------------------------------------------
 
+    def visible_run(conn, pol: Policy, run_id) -> dict:
+        """The run, or 404. An agent sees the runs of its campaign and the runs without a campaign."""
+        row = conn.execute("""SELECT r.*, w.campaign_id AS writer_campaign_id FROM run r
+                              LEFT JOIN client w ON w.id = r.client_id WHERE r.id = %s""", [run_id]).fetchone()
+        if row is None or not pol.run_visible(row):
+            raise HTTPException(404, 'run not found')
+        return row
+
+    def refuse_protected(conn, pol: Policy, ids: list, operation: str):
+        """An agent's run request with a protected observation gives 422. Each refusal is recorded."""
+        protected = guard.protected(conn, pol, ids)
+        if protected:
+            guard.refuse(conn, pol, protected, operation)
+            raise ValidationFailure([{'loc': ['observation_ids', ids.index(str(o))],
+                                      'msg': f'observation is reserved for evaluation ({r}). The refusal is recorded.'}
+                                     for o, r in protected.items()])
+
     def prepare_run(request: RunRequest, conn):
         """Check a run request as POST /runs does. Return the method, the full parameters, and the inputs."""
         method = contracts.method(request.method.id, request.method.version)
@@ -545,6 +575,10 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                                       f'{method.id} is a {method.kind or "non-analysis"} method'}])
         parameters = contracts.resolve_parameters(method, request.parameters)
         ids = [str(o) for o in request.observation_ids]
+        check_inputs(conn, ids)
+        return method, parameters, ids
+
+    def check_inputs(conn, ids: list[str]):
         errors = [{'loc': ['observation_ids', i], 'msg': 'duplicate observation id'}
                   for i, o in enumerate(ids) if o in ids[:i]]
         states = {str(r['id']): r['state'] for r in conn.execute(
@@ -556,7 +590,6 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 errors.append({'loc': ['observation_ids', i], 'msg': f'observation state is {states[o]}, not ready'})
         if errors:
             raise ValidationFailure(errors)
-        return method, parameters, ids
 
     def median_rate(conn, method) -> dict:
         """Median worker seconds per trial period and per job over the newest 200 complete jobs of the method."""
@@ -619,34 +652,28 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     def estimate_run(request: RunRequest, conn: Conn, actor: Reader):
         """Check a run request and estimate its work without a write. A failed check gives the same 422 as POST /runs.
         For an agent, the response also gives the campaign budgets after the run."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a run estimate')
         method, parameters, ids = prepare_run(request, conn)
+        if pol.agent:
+            refuse_protected(conn, pol, ids, 'run estimate')
         estimate, reason = workload(conn, method, parameters, ids)
         response = {'method': {'id': method.id, 'version': method.version}, 'parameters': parameters,
                     'observation_count': len(ids), 'estimate': estimate, 'estimate_reason': reason}
-        pol = policy_for(conn, actor)
         if pol.agent:
             state, exceeded = run_budget(conn, pol, method, len(ids), estimate and estimate['worker_seconds'])
             response['budget'] = {'campaign': pol.campaign['name'], 'state': state, 'exceeded': exceeded}
         return response
 
-    @app.post('/api/runs', status_code=201)
-    def create_run(request: RunRequest, conn: Conn, actor: Submitter):
-        method, parameters, ids = prepare_run(request, conn)
-        pol = policy_for(conn, actor)
+    def submit_run(conn, actor: Actor, pol: Policy, method, parameters: dict, ids: list[str], label: str | None,
+                   retry_of=None) -> dict:
+        """Write a run and one queued job for each observation. Agents pass the campaign checks first."""
         campaign_id = None
         if pol.agent:
             pol.require_active('a run submission')
             if pol.campaign['decisions_fixed_at'] is not None:
                 raise HTTPException(403, f'campaign {pol.campaign["name"]} fixed its decisions. It submits no new runs.')
-            protected = guard.protected(conn, pol, ids)
-            if protected:
-                for oid, reservation in protected.items():
-                    conn.execute("""INSERT INTO access_event (client_id, campaign_id, observation_id, reservation_id, outcome, operation)
-                                    VALUES (%s, %s, %s, %s, 'refused', 'run submission')""",
-                                 [actor.id, pol.campaign['id'], oid, reservation])
-                raise ValidationFailure([{'loc': ['observation_ids', ids.index(str(o))],
-                                          'msg': f'observation is reserved for evaluation ({r}). The refusal is recorded.'}
-                                         for o, r in protected.items()])
+            refuse_protected(conn, pol, ids, 'run submission')
             estimate, _ = workload(conn, method, parameters, ids)
             _, exceeded = run_budget(conn, pol, method, len(ids), estimate and estimate['worker_seconds'])
             if exceeded:
@@ -658,56 +685,154 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             job_id = str(uuid.uuid4())
             jobs.append((job_id, o, contracts.job_document(
                 job_id=job_id, run_id=run_id, method=method, parameters=parameters, observation_ids=[o])))
-        with conn.transaction():
-            _insert_run(conn, run_id, method, parameters, request.label, actor, campaign_id)
-            with conn.cursor() as cur:
-                cur.executemany('INSERT INTO run_input (run_id, observation_id) VALUES (%s, %s)',
-                                [(run_id, o) for o in ids])
-            for job_id, o, document in jobs:
-                _insert_job(conn, job_id, run_id, o, document)
-        return _run_detail(conn, run_id)
+        try:
+            with conn.transaction():
+                _insert_run(conn, run_id, method, parameters, label, actor, campaign_id, retry_of)
+                with conn.cursor() as cur:
+                    cur.executemany('INSERT INTO run_input (run_id, observation_id) VALUES (%s, %s)',
+                                    [(run_id, o) for o in ids])
+                for job_id, o, document in jobs:
+                    _insert_job(conn, job_id, run_id, o, document)
+        except pg_errors.Error as error:
+            if error.sqlstate == 'RC003':
+                raise HTTPException(409, error.diag.message_primary) from error
+            raise
+        return _run_detail(conn, run_id, pol, excluded_for(conn, pol))
 
-    @app.get('/api/runs', dependencies=[Depends(need('read'))])
-    def list_runs(conn: Conn, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
-        ids = [r['id'] for r in conn.execute('SELECT id FROM run ORDER BY created_at DESC, id LIMIT %s OFFSET %s',
-                                             [limit, offset]).fetchall()]
-        return _run_summaries(conn, ids)
+    @app.post('/api/runs', status_code=201)
+    def create_run(request: RunRequest, conn: Conn, actor: Submitter):
+        pol = policy_for(conn, actor)
+        pol.require_active('a run submission')
+        method, parameters, ids = prepare_run(request, conn)
+        return submit_run(conn, actor, pol, method, parameters, ids, request.label)
 
-    @app.get('/api/runs/default', dependencies=[Depends(need('read'))])
-    def default_run(conn: Conn, dataset_id: str | None = None, method_id: str | None = None,
+    @app.get('/api/runs')
+    def list_runs(conn: Conn, actor: Reader, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
+        """Runs, newest first, with job counts by state. An agent sees the runs of its campaign and the runs without
+        a campaign, without the jobs of protected observations."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a run list')
+        scope, args = pol.run_scope('r')
+        ids = [r['id'] for r in conn.execute(f'SELECT id FROM run r WHERE {scope} ORDER BY created_at DESC, id LIMIT %s OFFSET %s',
+                                             [*args, limit, offset]).fetchall()]
+        return _run_summaries(conn, ids, pol, excluded_for(conn, pol))
+
+    @app.get('/api/runs/default')
+    def default_run(conn: Conn, actor: Reader, dataset_id: str | None = None, method_id: str | None = None,
                     method_version: int | None = None):
-        """The run that a client shows when it names none (rule default-run/1)."""
+        """The run that a client shows when it names none (rule default-run/1), among the runs that the client sees."""
+        pol = policy_for(conn, actor)
+        pol.require_active('the default run')
         analysis = [key for key, m in contracts.methods.items() if m.kind == 'analysis'
                     and (method_id is None or key[0] == method_id) and (method_version is None or key[1] == method_version)]
         if not analysis:
             raise HTTPException(404, 'no analysis method matches')
-        where, args = ['(r.method_id, r.method_version) IN (SELECT * FROM unnest(%s::text[], %s::int[]))'], \
-            [[k[0] for k in analysis], [k[1] for k in analysis]]
+        scope, scope_args = pol.run_scope('r')
+        excluded = excluded_for(conn, pol)
+        where, args = ['(r.method_id, r.method_version) IN (SELECT * FROM unnest(%s::text[], %s::int[]))', scope], \
+            [[k[0] for k in analysis], [k[1] for k in analysis], *scope_args]
         if dataset_id is not None:
             where.append("""EXISTS (SELECT 1 FROM run_input ri JOIN observation o ON o.id = ri.observation_id
                                    WHERE ri.run_id = r.id AND o.dataset_id = %s)""")
             args.append(dataset_id)
         candidates = conn.execute(f"""
             SELECT r.id, r.created_at,
-                   (SELECT count(*) FROM job j WHERE j.run_id = r.id AND j.state = 'complete') AS complete
-            FROM run r WHERE {' AND '.join(where)}""", args).fetchall()
+                   (SELECT count(*) FROM job j WHERE j.run_id = r.id AND j.state = 'complete'
+                      AND NOT (j.observation_id = ANY(%s::uuid[]))) AS complete
+            FROM run r WHERE {' AND '.join(where)}""", [excluded, *args]).fetchall()
         chosen = DEFAULT_RUN.choose(candidates)
         if chosen is None:
             raise HTTPException(404, 'no analysis run has a complete job')
-        return {'rule': DEFAULT_RUN.id, 'run': _run_summaries(conn, [chosen['id']])[0]}
+        return {'rule': DEFAULT_RUN.id, 'run': _run_summaries(conn, [chosen['id']], pol, excluded)[0]}
 
-    @app.get('/api/runs/{run_id}', dependencies=[Depends(need('read'))])
-    def get_run(run_id: uuid.UUID, conn: Conn):
-        return _run_detail(conn, run_id)
+    @app.get('/api/runs/compare')
+    def compare_runs(conn: Conn, actor: Reader, run_a: uuid.UUID, run_b: uuid.UUID,
+                     observation_id: uuid.UUID | None = Query(None, description='Only the row of this observation.'),
+                     limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+        """Stored measurements of two runs of one method side by side (rule run-comparison/1). The differences are
+        display calculations, not stored results. Each listed observation counts as a read for an agent's budget."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a run comparison')
+        a, b = visible_run(conn, pol, run_a), visible_run(conn, pol, run_b)
+        if a['method_id'] != b['method_id']:
+            raise ValidationFailure([{'loc': ['query', 'run_b'],
+                                      'msg': f'run_b uses {b["method_id"]}, run_a uses {a["method_id"]}. '
+                                             'A comparison needs one method.'}])
+        excluded = excluded_for(conn, pol)
+        inputs = conn.execute("""
+            SELECT DISTINCT observation_id FROM run_input
+            WHERE run_id = ANY(%s) AND NOT (observation_id = ANY(%s::uuid[]))
+            ORDER BY observation_id""", [[run_a, run_b], excluded]).fetchall()
+        all_ids = [r['observation_id'] for r in inputs]
+        if observation_id is not None:
+            all_ids = [o for o in all_ids if o == observation_id]
+        jobs = conn.execute("""SELECT id, run_id, observation_id, state, result FROM job
+                               WHERE run_id = ANY(%s) AND observation_id = ANY(%s)""",
+                            [[run_a, run_b], all_ids]).fetchall()
+        side = {(j['run_id'], j['observation_id']): j for j in jobs}
+        summary = {'observations': len(all_ids), 'in_both': 0, 'only_a': 0, 'only_b': 0, 'state_differs': 0}
+        for o in all_ids:
+            ja, jb = side.get((run_a, o)), side.get((run_b, o))
+            if ja and jb:
+                summary['in_both'] += 1
+                summary['state_differs'] += ja['state'] != jb['state']
+            elif ja:
+                summary['only_a'] += 1
+            elif jb:
+                summary['only_b'] += 1
+        page = all_ids[offset:offset + limit]
+        guard.read(conn, pol, page, 'run comparison')
+        page_jobs = [j['id'] for j in jobs if j['observation_id'] in set(page)]
+        measured: dict = {}
+        for m in conn.execute('SELECT * FROM measurement WHERE job_id = ANY(%s) ORDER BY id', [page_jobs]).fetchall():
+            if m['role'] == 'reference_comparison' and not pol.labels_visible:
+                continue
+            measured.setdefault(m['job_id'], {}).setdefault(m['role'], {})[m['name']] = db.measurement(m)
+        targets = {r['id']: r for r in conn.execute(
+            'SELECT id, target_id, sector FROM observation WHERE id = ANY(%s)', [page]).fetchall()}
 
-    @app.get('/api/runs/{run_id}/results')
-    def get_run_results(run_id: uuid.UUID, conn: Conn, actor: Reader,
-                        observation_id: uuid.UUID | None = Query(None, description='Only the job of this observation.')):
+        def side_of(job):
+            if job is None:
+                return None
+            result = job['result'] or {}
+            return {'job_id': job['id'], 'state': job['state'], 'outcome': result.get('outcome'),
+                    'error': redact_error(result.get('error'), pol), 'measurements': measured.get(job['id'], {})}
+
+        rows = []
+        for o in page:
+            sa, sb = side_of(side.get((run_a, o))), side_of(side.get((run_b, o)))
+            differences = {}
+            for role in ('search', 'reference_comparison'):
+                names = set((sa or {}).get('measurements', {}).get(role, {})) | set((sb or {}).get('measurements', {}).get(role, {}))
+                for name in sorted(names):
+                    d = RUN_COMPARISON.difference((sa or {}).get('measurements', {}).get(role, {}).get(name),
+                                                  (sb or {}).get('measurements', {}).get(role, {}).get(name))
+                    if d is not None:
+                        differences.setdefault(role, {})[name] = d
+            row = {'observation_id': o, 'target_id': targets[o]['target_id'] if pol.identity_visible else None,
+                   'sector': targets[o]['sector'], 'a': sa, 'b': sb, 'differences': differences}
+            rows.append(row)
+        differences = parameter_differences(a['parameters'], b['parameters'])
+        summaries = _run_summaries(conn, [run_a, run_b], pol, excluded)
+        protected_excluded = conn.execute("""SELECT count(DISTINCT observation_id) AS n FROM run_input
+                                              WHERE run_id = ANY(%s) AND observation_id = ANY(%s::uuid[])""",
+                                          [[run_a, run_b], excluded]).fetchone()['n'] if excluded else 0
+        return {'rule': RUN_COMPARISON.id, 'display_calculation': True, 'run_a': summaries[0], 'run_b': summaries[-1],
+                'parameters_equal': not differences, 'parameter_differences': differences,
+                'summary': summary, 'total': len(all_ids), 'limit': limit, 'offset': offset,
+                'withheld': pol.withheld(), 'protected_excluded': protected_excluded, 'rows': rows}
+
+    @app.get('/api/runs/{run_id}')
+    def get_run(run_id: uuid.UUID, conn: Conn, actor: Reader):
+        pol = policy_for(conn, actor)
+        pol.require_active('a run')
+        return _run_detail(conn, run_id, pol, excluded_for(conn, pol))
+
+    def run_results(conn, pol: Policy, run_id, observation_id=None) -> dict:
         """Results of the run's jobs. For an agent, protected observations are left out, and each other observation
         counts toward the observation budget."""
-        if conn.execute('SELECT 1 FROM run WHERE id = %s', [run_id]).fetchone() is None:
-            raise HTTPException(404, 'run not found')
-        pol = policy_for(conn, actor)
+        pol.require_active('run results')
+        visible_run(conn, pol, run_id)
         only = 'AND j.observation_id = %s' if observation_id else ''
         extra = [observation_id] if observation_id else []
         jobs = conn.execute(f"""
@@ -719,12 +844,11 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             excluded = sum(1 for j in jobs if j['observation_id'] in protected)
             jobs = [j for j in jobs if j['observation_id'] not in protected]
         guard.read(conn, pol, [j['observation_id'] for j in jobs], 'run results')
-        measurements = conn.execute(f"""
-            SELECT m.* FROM measurement m JOIN job j ON j.id = m.job_id
-            WHERE j.run_id = %s {only} ORDER BY m.id""", [run_id, *extra]).fetchall()
-        artifacts = conn.execute(f"""
-            SELECT a.* FROM artifact a JOIN job j ON j.id = a.job_id
-            WHERE j.run_id = %s {only} ORDER BY a.created_at, a.id""", [run_id, *extra]).fetchall()
+        job_ids = [j['id'] for j in jobs]
+        measurements = conn.execute('SELECT m.* FROM measurement m WHERE m.job_id = ANY(%s) ORDER BY m.id',
+                                    [job_ids]).fetchall()
+        artifacts = conn.execute('SELECT a.* FROM artifact a WHERE a.job_id = ANY(%s) ORDER BY a.created_at, a.id',
+                                 [job_ids]).fetchall()
         items = []
         for job in jobs:
             result = job['result'] or {}
@@ -737,7 +861,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 'observation_id': job['observation_id'],
                 'state': job['state'],
                 'outcome': result.get('outcome'),
-                'error': result.get('error'),
+                'error': redact_error(result.get('error'), pol),
                 'measurements': policy_module.redact_measurements(grouped, pol),
                 'artifacts': [db.artifact(a) for a in artifacts if a['job_id'] == job['id']],
                 'diagnostics': policy_module.redact_diagnostics(result.get('diagnostics'), pol),
@@ -745,6 +869,13 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 'software': result.get('software'),
             })
         return {'run_id': run_id, 'withheld': pol.withheld(), 'protected_excluded': excluded, 'jobs': items}
+
+    @app.get('/api/runs/{run_id}/results')
+    def get_run_results(run_id: uuid.UUID, conn: Conn, actor: Reader,
+                        observation_id: uuid.UUID | None = Query(None, description='Only the job of this observation.')):
+        """Results of the run's jobs. For an agent, protected observations are left out, and each other observation
+        counts toward the observation budget."""
+        return run_results(conn, policy_for(conn, actor), run_id, observation_id)
 
     @app.get('/api/runs/{run_id}/observations/{observation_id}/fold')
     def get_fold(
@@ -758,11 +889,14 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         points: bool = Query(False, description='Include the folded points.'),
     ):
         """Fold the stored flattened flux and bin it. A display calculation, not a stored result."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a fold')
+        visible_run(conn, pol, run_id)
         job = conn.execute('SELECT id, state FROM job WHERE run_id = %s AND observation_id = %s',
                            [run_id, observation_id]).fetchone()
         if job is None:
             raise HTTPException(404, 'the run has no job for this observation')
-        guard.read(conn, policy_for(conn, actor), [observation_id], 'fold')
+        guard.read(conn, pol, [observation_id], 'fold')
         rows = {a['kind']: a for a in conn.execute(
             "SELECT * FROM artifact WHERE job_id = %s AND kind IN ('prepared_series', 'search_summary')", [job['id']]).fetchall()}
         if set(rows) != {'prepared_series', 'search_summary'}:
@@ -791,34 +925,103 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             result['points'] = {'x_hours': xs, 'flux': ys}
         return result
 
+    def owned_run(conn, actor: Actor, pol: Policy, run_id) -> dict:
+        """A run that the client can change: its own run, or any visible run with "admin"."""
+        pol.require_active('a run change')
+        run = visible_run(conn, pol, run_id)
+        if run['client_id'] != actor.id and not actor.has('admin'):
+            raise HTTPException(403, f'client {actor.name} can change only its own runs')
+        return run
+
+    @app.post('/api/runs/{run_id}/cancel')
+    def cancel_run(run_id: uuid.UUID, conn: Conn, actor: Submitter):
+        """Cancel every queued and running job of the run. A client cancels only its own runs, unless it has "admin".
+        A running job stops at the worker's next lease extension. Its output is discarded. A running index job is not
+        cancelled: an index job stops only at its end."""
+        pol = policy_for(conn, actor)
+        run = owned_run(conn, actor, pol, run_id)
+        index = contracts.method(run['method_id'], run['method_version'])
+        running_allowed = not (index and index.kind == 'index')
+        with conn.transaction():
+            rows = conn.execute("""
+                WITH old AS (SELECT id, state FROM job WHERE run_id = %s AND state IN ('queued', 'running') FOR UPDATE)
+                UPDATE job j SET state = 'cancelled', finished_at = now(), cancelled_by = %s, lease_expires_at = NULL
+                FROM old WHERE j.id = old.id AND (old.state = 'queued' OR %s)
+                RETURNING j.id, old.state AS previous_state""", [run_id, actor.id, running_allowed]).fetchall()
+        summary = _run_summaries(conn, [run_id], pol, excluded_for(conn, pol))[0]
+        return {'run_id': run_id, 'cancelled': len(rows), 'was_running': sum(r['previous_state'] == 'running' for r in rows),
+                'job_states': summary['job_states'],
+                'note': None if running_allowed else 'A running index job is not cancelled. It stops only at its end.'}
+
+    @app.post('/api/runs/{run_id}/retry', status_code=201)
+    def retry_run(run_id: uuid.UUID, conn: Conn, actor: Submitter, request: RetryRequest | None = None):
+        """A new run with the same method version and parameters for the observations whose job in this run is failed
+        or cancelled. Complete and inconclusive jobs stay, and the retry does not repeat them. The new run names this
+        run in retry_of. A method does not resume partial work: each job of the retry starts again."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a run retry')
+        run = visible_run(conn, pol, run_id)
+        method = contracts.method(run['method_id'], run['method_version'])
+        if method is None or method.kind != 'analysis':
+            raise ValidationFailure([{'loc': ['path', 'run_id'],
+                                      'msg': f'run {run_id} uses {run["method_id"]} v{run["method_version"]}, not an analysis method'}])
+        parameters = run['parameters']
+        if contracts.resolve_parameters(method, parameters) != parameters:
+            raise HTTPException(409, 'the stored parameters differ from the current schema defaults. Submit a new run.')
+        ids = [str(r['observation_id']) for r in conn.execute(
+            """SELECT observation_id FROM job WHERE run_id = %s AND state IN ('failed', 'cancelled')
+               ORDER BY observation_id""", [run_id]).fetchall()]
+        if not ids:
+            raise HTTPException(409, f'run {run_id} has no failed or cancelled job')
+        check_inputs(conn, ids)
+        label = request.label if request and request.label else f'Retry of {run_id}: failed and cancelled jobs'
+        return submit_run(conn, actor, pol, method, parameters, ids, label, retry_of=run_id)
+
     # Jobs ---------------------------------------------------------------
+
+    def job_row(conn, pol: Policy, job_id) -> dict:
+        row = conn.execute("""SELECT j.*, r.campaign_id AS run_campaign_id, r.client_id AS run_client_id
+                              FROM job j JOIN run r ON r.id = j.run_id WHERE j.id = %s""", [job_id]).fetchone()
+        if row is None or not pol.run_visible({'campaign_id': row['run_campaign_id']}):
+            raise HTTPException(404, 'job not found')
+        return row
 
     @app.get('/api/jobs/{job_id}')
     def get_job(job_id: uuid.UUID, conn: Conn, actor: Reader):
-        row = conn.execute('SELECT * FROM job WHERE id = %s', [job_id]).fetchone()
-        if row is None:
-            raise HTTPException(404, 'job not found')
         pol = policy_for(conn, actor)
+        pol.require_active('a job')
+        row = job_row(conn, pol, job_id)
         guard.read(conn, pol, [row['observation_id']], 'job')
+        row.pop('run_campaign_id')
+        row.pop('run_client_id')
         row['result'] = policy_module.redact_result_document(row['result'], pol)
+        if row['result'] and row['result'].get('error'):
+            row['result'] = {**row['result'], 'error': redact_error(row['result']['error'], pol)}
         return row
 
     @app.post('/api/jobs/{job_id}/cancel')
     def cancel_job(job_id: uuid.UUID, conn: Conn, actor: Submitter):
-        """Cancel a queued job. A client cancels only the jobs of its own runs, unless it has "admin"."""
-        owner = conn.execute('SELECT r.client_id FROM job j JOIN run r ON r.id = j.run_id WHERE j.id = %s', [job_id]).fetchone()
-        if owner is not None and owner['client_id'] != actor.id and not actor.has('admin'):
+        """Cancel a queued or running job. A client cancels only the jobs of its own runs, unless it has "admin".
+        A running job stops at the worker's next lease extension. The worker discards its output."""
+        pol = policy_for(conn, actor)
+        pol.require_active('a job cancellation')
+        owner = job_row(conn, pol, job_id)
+        if owner['run_client_id'] != actor.id and not actor.has('admin'):
             raise HTTPException(403, f'client {actor.name} can cancel only the jobs of its own runs')
+        method = owner['document'].get('method', {})
+        known = contracts.method(method.get('id'), method.get('version'))
+        if owner['state'] == 'running' and known is not None and known.kind == 'index':
+            raise HTTPException(409, 'a running index job is not cancelled. It stops only at its end.')
         with conn.transaction():
             row = conn.execute("""
-                UPDATE job SET state = 'cancelled', finished_at = now(), cancelled_by = %s
-                WHERE id = %s AND state = 'queued'
-                RETURNING id, state, finished_at, cancelled_by""", [actor.id, job_id]).fetchone()
+                WITH old AS (SELECT id, state FROM job WHERE id = %s AND state IN ('queued', 'running') FOR UPDATE)
+                UPDATE job j SET state = 'cancelled', finished_at = now(), cancelled_by = %s, lease_expires_at = NULL
+                FROM old WHERE j.id = old.id
+                RETURNING j.id, j.state, j.finished_at, j.cancelled_by, old.state = 'running' AS was_running""",
+                               [job_id, actor.id]).fetchone()
             if row is None:
                 current = conn.execute('SELECT state FROM job WHERE id = %s', [job_id]).fetchone()
-                if current is None:
-                    raise HTTPException(404, 'job not found')
-                raise HTTPException(409, f"job state is {current['state']}; only a queued job can be cancelled")
+                raise HTTPException(409, f"job state is {current['state']}; only a queued or running job can be cancelled")
         return row
 
     # Artifacts ----------------------------------------------------------
@@ -837,27 +1040,34 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         data = target.read_bytes()
         return json.loads(gzip.decompress(data) if row['content_encoding'] == 'gzip' else data)
 
-    def _artifact_row(conn, artifact_id):
-        row = conn.execute('SELECT * FROM artifact WHERE id = %s', [artifact_id]).fetchone()
-        if row is None:
+    def _artifact_row(conn, pol: Policy, artifact_id):
+        row = conn.execute("""SELECT a.*, r.campaign_id AS run_campaign_id FROM artifact a
+                              JOIN job j ON j.id = a.job_id JOIN run r ON r.id = j.run_id WHERE a.id = %s""",
+                           [artifact_id]).fetchone()
+        if row is None or not pol.run_visible({'campaign_id': row['run_campaign_id']}):
             raise HTTPException(404, 'artifact not found')
         return row
 
     @app.get('/api/artifacts/{artifact_id}')
     def get_artifact(artifact_id: uuid.UUID, conn: Conn, actor: Reader):
-        row = _artifact_row(conn, artifact_id)
         pol = policy_for(conn, actor)
         pol.require_active('artifact metadata')
-        if pol.agent and guard.protected(conn, pol, [row['observation_id']] if row['observation_id'] else []):
-            raise HTTPException(403, 'the artifact belongs to an observation that is reserved for evaluation')
+        row = _artifact_row(conn, pol, artifact_id)
+        if pol.agent and row['observation_id']:
+            protected = guard.protected(conn, pol, [row['observation_id']])
+            if protected:
+                guard.refuse(conn, pol, protected, 'artifact metadata')
+                raise HTTPException(403, 'the artifact belongs to an observation that is reserved for evaluation. '
+                                         'The refusal is recorded.')
         return db.artifact(row)
 
     @app.get('/api/artifacts/{artifact_id}/content')
     def get_artifact_content(artifact_id: uuid.UUID, request: Request, conn: Conn, actor: Reader):
         """The stored artifact bytes. When blinding withholds values, a JSON summary artifact comes back redacted
         and uncompressed."""
-        row = _artifact_row(conn, artifact_id)
         pol = policy_for(conn, actor)
+        pol.require_active('artifact content')
+        row = _artifact_row(conn, pol, artifact_id)
         guard.read(conn, pol, [row['observation_id']], 'artifact content')
         if policy_module.needs_redaction(row['kind'], pol):
             document = policy_module.redact_json_artifact(row['kind'], read_artifact_json(row), pol)
@@ -873,15 +1083,198 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             raise HTTPException(404, 'artifact file is missing')
         return FileResponse(target, media_type=row['media_type'], headers=headers)
 
+    # Evidence exports ---------------------------------------------------
+
+    def export_artifact_files(conn, pol: Policy, rows: list[dict], limitations: list[str]) -> list:
+        """The stored bytes of each artifact, or a redacted JSON document when blinding withholds values."""
+        files = []
+        for row in rows:
+            name = row['path'].rsplit('/', 1)[-1]
+            target = artifact_path(row)
+            if not target.is_file():
+                limitations.append(f'The file of artifact {row["id"]} is missing on the artifact volume. '
+                                   'The export lists the artifact without its file.')
+                continue
+            if policy_module.needs_redaction(row['kind'], pol):
+                document = policy_module.redact_json_artifact(row['kind'], read_artifact_json(row), pol)
+                files.append(exports_module.ExportFile(
+                    path=f'artifacts/{row["id"]}/{name.removesuffix(".gz")}', media_type='application/json',
+                    content='artifact', data=exports_module.canonical_json(document), artifact_id=row['id'],
+                    stored_sha256=row['sha256'], redacted=True))
+            else:
+                files.append(exports_module.ExportFile(
+                    path=f'artifacts/{row["id"]}/{name}',
+                    media_type='application/gzip' if row['content_encoding'] == 'gzip' else row['media_type'],
+                    content='artifact', source=target, artifact_id=row['id'], stored_sha256=row['sha256']))
+        return files
+
+    def export_observations(conn, pol: Policy, ids: list) -> list[dict]:
+        rows = conn.execute(f'SELECT {OBSERVATION_COLUMNS}, header FROM observation WHERE id = ANY(%s) ORDER BY id',
+                            [list(ids)]).fetchall()
+        return [redact_observation(r, pol) for r in rows]
+
+    def export_measurements(conn, pol: Policy, rows: list[dict], targets: dict) -> list[dict]:
+        out = []
+        for m in rows:
+            if m['role'] == 'reference_comparison' and not pol.labels_visible:
+                continue
+            item = db.measurement(m)
+            target = targets.get(m['observation_id'])
+            out.append({'measurement_id': m['id'], 'job_id': m['job_id'], 'observation_id': m['observation_id'],
+                        'target_id': target if pol.identity_visible else None, **{k: v for k, v in item.items() if k != 'id'}})
+        return out
+
+    def export_jobs(conn, pol: Policy, job_ids: list) -> list[dict]:
+        rows = conn.execute('SELECT * FROM job WHERE id = ANY(%s) ORDER BY created_at, id', [list(job_ids)]).fetchall()
+        for row in rows:
+            row['result'] = policy_module.redact_result_document(row['result'], pol)
+            if row['result'] and row['result'].get('error'):
+                row['result'] = {**row['result'], 'error': redact_error(row['result']['error'], pol)}
+        return rows
+
+    def export_limitations(pol: Policy, method_keys, protected_excluded: int) -> list[str]:
+        out = []
+        for key in sorted(set(method_keys)):
+            method = contracts.method(*key)
+            if method is not None:
+                out.append(f'{method.id} v{method.version}: {method.info.get("scientific_status", "no scientific status")}')
+        out.append('External files in the evidence are listed by URI, SHA-256, and size. The export does not include them. '
+                   'An external file is a proposal, not platform evidence.')
+        out.append('Measurements, model judgments, evidence statuses, and identity statuses are separate records. '
+                   'A decision score is a judgment, not an uncertainty or a probability.')
+        if pol.withheld():
+            out.append(f'Blinding withheld these value groups from {pol.actor.name}: {", ".join(pol.withheld())}.')
+        if protected_excluded:
+            out.append(f'The cohort guard left out {protected_excluded} protected observation(s).')
+        return out
+
+    def export_response(subject_kind: str, subject_id, actor: Actor, pol: Policy, files: list, artifacts: str,
+                        protected_excluded: int, limitations: list[str]):
+        withheld = list(pol.withheld())
+        if any(f.text_withheld for f in files):
+            withheld.append('text')
+        manifest = {
+            'contract': 'export/1', 'subject': {'kind': subject_kind, 'id': str(subject_id)},
+            'exported_by': {'name': actor.name, 'kind': actor.kind},
+            'api': {'version': __version__, 'contracts_source': contracts.source},
+            'artifacts': artifacts, 'withheld': withheld, 'protected_excluded': protected_excluded,
+            'limitations': limitations,
+        }
+        files.append(exports_module.ExportFile(path='README.txt', media_type='text/plain; charset=utf-8', content='readme',
+                                               data=exports_module.readme(manifest).encode()))
+        spool, _, digest = exports_module.write_zip(files, manifest, contracts.export_manifest)
+        filename = f'delta-{subject_kind}-{subject_id}.zip'
+        return StreamingResponse(exports_module.chunks(spool), media_type='application/zip', headers={
+            'Content-Disposition': f'attachment; filename="{filename}"', 'X-Export-Manifest-SHA256': digest,
+            'Cache-Control': 'private, no-store'})
+
+    ArtifactsMode = Query('none', pattern=r'^(none|all)$',
+                          description='none: list artifacts with their SHA-256. all: include each artifact file.')
+
+    @app.get('/api/runs/{run_id}/export')
+    def export_run(run_id: uuid.UUID, conn: Conn, actor: Reader, artifacts: str = ArtifactsMode):
+        """A ZIP file with the run, its observations, measurements, artifacts, and the research records that refer to it.
+        manifest.json (contract export/1) lists each file with its size and SHA-256. The same request on the same
+        records gives the same bytes. Blinding, the cohort guard, and the observation budget apply as in the views."""
+        pol = policy_for(conn, actor)
+        pol.require_active('an export')
+        detail = _run_detail(conn, run_id, pol, excluded_for(conn, pol))
+        results = run_results(conn, pol, run_id)
+        job_ids = [j['job_id'] for j in results['jobs']]
+        observation_ids = sorted({j['observation_id'] for j in results['jobs'] if j['observation_id']}, key=str)
+        observations = export_observations(conn, pol, observation_ids)
+        targets = {o['id']: o['target_id'] for o in conn.execute(
+            'SELECT id, target_id FROM observation WHERE id = ANY(%s)', [observation_ids]).fetchall()}
+        measurement_rows = conn.execute('SELECT * FROM measurement WHERE job_id = ANY(%s) ORDER BY id', [job_ids]).fetchall()
+        measurements = export_measurements(conn, pol, measurement_rows, targets)
+        artifact_rows = conn.execute("""SELECT * FROM artifact WHERE job_id = ANY(%s)
+                                           OR (observation_id = ANY(%s) AND kind = 'light_curve')
+                                        ORDER BY id""", [job_ids, observation_ids]).fetchall()
+        method_key = (detail['method_id'], detail['method_version'])
+        method = contracts.method(*method_key)
+        limitations = export_limitations(pol, [method_key], results['protected_excluded'])
+        records_view = records_api.helpers['records_about'](conn, actor, run_ids=[run_id], job_ids=job_ids,
+                                                             measurement_ids=[m['id'] for m in measurement_rows],
+                                                             artifact_ids=[a['id'] for a in artifact_rows])
+        J = exports_module.json_file
+        files = [
+            J('run.json', 'run', {'run': detail, 'method': method.describe() if method else None,
+                                  'jobs': export_jobs(conn, pol, job_ids)}, text_withheld=detail.get('text_withheld', False)),
+            J('observations.json', 'observations', observations),
+            J('measurements.json', 'measurements', measurements),
+            exports_module.measurements_csv(measurements),
+            J('artifacts.json', 'records', [db.artifact(a) for a in artifact_rows]),
+            J('records.json', 'records', records_view, text_withheld='text' in records_view['withheld']),
+            J('methods.json', 'methods', [method.describe()] if method else []),
+        ]
+        if artifacts == 'all':
+            files += export_artifact_files(conn, pol, artifact_rows, limitations)
+        return export_response('run', run_id, actor, pol, files, artifacts, results['protected_excluded'], limitations)
+
+    @app.get('/api/candidates/{candidate_id}/export')
+    def export_candidate(candidate_id: uuid.UUID, conn: Conn, actor: Reader, artifacts: str = ArtifactsMode):
+        """A ZIP file with the candidate, its resolved evidence, assessments, decisions, notes, and the referenced runs,
+        jobs, measurements, and artifacts. manifest.json (contract export/1) lists each file with its SHA-256."""
+        pol = policy_for(conn, actor)
+        pol.require_active('an export')
+        detail = records_api.helpers['candidate_detail'](conn, actor, candidate_id)
+        refs = detail['evidence']
+        ids = lambda kind: [r['id'] for r in refs if r['kind'] == kind]  # noqa: E731
+        job_ids = set(ids('job'))
+        measurement_ids = ids('measurement')
+        artifact_ids = ids('artifact')
+        if measurement_ids:
+            job_ids |= {r['job_id'] for r in conn.execute('SELECT job_id FROM measurement WHERE id = ANY(%s::bigint[])',
+                                                          [measurement_ids]).fetchall()}
+        if artifact_ids:
+            job_ids |= {r['job_id'] for r in conn.execute('SELECT job_id FROM artifact WHERE id = ANY(%s::uuid[])',
+                                                          [artifact_ids]).fetchall()}
+        job_ids = sorted(job_ids, key=str)
+        run_ids = set(ids('run')) | {r['run_id'] for r in conn.execute(
+            'SELECT run_id FROM job WHERE id = ANY(%s::uuid[])', [job_ids]).fetchall()}
+        runs = []
+        method_keys = []
+        for rid in sorted(run_ids, key=str):
+            run = visible_run(conn, pol, rid)
+            method_keys.append((run['method_id'], run['method_version']))
+            runs.append({'run': {k: v for k, v in _run_detail(conn, rid, pol, excluded_for(conn, pol)).items() if k != 'jobs'},
+                         'jobs': [j for j in export_jobs(conn, pol, job_ids) if j['run_id'] == rid]})
+        observation_ids = sorted({uuid.UUID(str(o)) for o in detail['observation_ids']} |
+                                 {r['observation_id'] for r in conn.execute(
+                                     'SELECT observation_id FROM job WHERE id = ANY(%s::uuid[]) AND observation_id IS NOT NULL',
+                                     [job_ids]).fetchall()}, key=str)
+        targets = {o['id']: o['target_id'] for o in conn.execute(
+            'SELECT id, target_id FROM observation WHERE id = ANY(%s)', [observation_ids]).fetchall()}
+        measurement_rows = conn.execute("""SELECT * FROM measurement WHERE job_id = ANY(%s::uuid[]) OR id = ANY(%s::bigint[])
+                                           ORDER BY id""", [job_ids, measurement_ids]).fetchall()
+        artifact_rows = conn.execute("""SELECT * FROM artifact WHERE job_id = ANY(%s::uuid[]) OR id = ANY(%s::uuid[])
+                                        ORDER BY id""", [job_ids, artifact_ids]).fetchall()
+        limitations = export_limitations(pol, method_keys, 0)
+        J = exports_module.json_file
+        measurements = export_measurements(conn, pol, measurement_rows, targets)
+        files = [
+            J('candidate.json', 'records', detail, text_withheld='text' in detail['withheld']),
+            J('runs.json', 'run', runs, text_withheld=any(r['run'].get('text_withheld') for r in runs)),
+            J('observations.json', 'observations', export_observations(conn, pol, observation_ids)),
+            J('measurements.json', 'measurements', measurements),
+            exports_module.measurements_csv(measurements),
+            J('artifacts.json', 'records', [db.artifact(a) for a in artifact_rows]),
+            J('methods.json', 'methods', [contracts.method(*k).describe() for k in sorted(set(method_keys))
+                                          if contracts.method(*k)]),
+        ]
+        if artifacts == 'all':
+            files += export_artifact_files(conn, pol, artifact_rows, limitations)
+        return export_response('candidate', candidate_id, actor, pol, files, artifacts, 0, limitations)
+
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
-    app.include_router(records.router(connection=connection, need=need, guard=guard, contracts=contracts), prefix='/api')
+    app.include_router(records_api, prefix='/api')
 
     return app
 
 
 OBSERVATION_COLUMNS = """id, dataset_id, product_type, relative_path, bytes, sha256, target_id, sector,
     cadence_seconds, time_start, time_stop, time_scale, time_reference, row_count, labels, state,
-    findings, first_indexed_at, last_seen_at"""
+    findings, provenance, first_indexed_at, last_seen_at"""
 
 
 def _json_number(expression: str) -> str:
@@ -901,29 +1294,55 @@ TARGET_ATTRIBUTES = ('observation_id', 'dataset_id', 'target_id', 'sector', 'cad
                      'depth_snr', 'relative_period_error')
 
 
-def _run_summaries(conn, ids):
-    """Run summaries in the order of ids, with input counts and job states."""
+def parameter_differences(a, b, path: str = '') -> list[dict]:
+    """Leaf values of two parameter documents that differ, by dotted path, in sorted order."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = []
+        for key in sorted(set(a) | set(b)):
+            out += parameter_differences(a.get(key), b.get(key), f'{path}.{key}' if path else key)
+        return out
+    return [] if a == b else [{'path': path, 'a': a, 'b': b}]
+
+
+def _text_rule(row: dict, pol: Policy, field: str = 'label') -> dict:
+    """Rule free-text/1 for one text field of a run. The writer is the client that created the run."""
+    writer = row.pop('writer_campaign_id', None)
+    row['text_withheld'] = False
+    if row.get(field) is not None and not pol.text_visible(writer):
+        row[field] = None
+        row['text_withheld'] = True
+    return row
+
+
+def _run_summaries(conn, ids, pol: Policy, excluded=()):
+    """Run summaries in the order of ids, with input counts and job states. The counts leave out excluded observations."""
     if not ids:
         return []
+    excluded = list(excluded)
     rows = conn.execute("""
         SELECT r.id, r.method_id, r.method_version, r.label, r.requested_by, r.client_id, r.campaign_id, r.created_at,
-               r.parameters_sha256,
-               (SELECT count(*) FROM run_input i WHERE i.run_id = r.id) AS input_count,
+               r.parameters_sha256, r.retry_of, w.campaign_id AS writer_campaign_id,
+               (SELECT count(*) FROM run_input i WHERE i.run_id = r.id
+                  AND NOT (i.observation_id = ANY(%(x)s::uuid[]))) AS input_count,
+               (SELECT count(*) FROM run_input i WHERE i.run_id = r.id
+                  AND i.observation_id = ANY(%(x)s::uuid[])) AS protected_excluded,
                COALESCE((SELECT jsonb_object_agg(state, n) FROM
-                   (SELECT state, count(*) AS n FROM job j WHERE j.run_id = r.id GROUP BY state) s),
+                   (SELECT state, count(*) AS n FROM job j WHERE j.run_id = r.id
+                      AND (j.observation_id IS NULL OR NOT (j.observation_id = ANY(%(x)s::uuid[]))) GROUP BY state) s),
                    '{}'::jsonb) AS job_states
-        FROM run r WHERE r.id = ANY(%s)""", [ids]).fetchall()
-    by_id = {r['id']: r for r in rows}
+        FROM run r LEFT JOIN client w ON w.id = r.client_id WHERE r.id = ANY(%(ids)s)""",
+                        {'x': excluded, 'ids': list(ids)}).fetchall()
+    by_id = {r['id']: _text_rule(r, pol) for r in rows}
     return [by_id[i] for i in ids if i in by_id]
 
 
-def _insert_run(conn, run_id, method, parameters, label, actor: Actor, campaign_id=None):
+def _insert_run(conn, run_id, method, parameters, label, actor: Actor, campaign_id=None, retry_of=None):
     conn.execute("""
         INSERT INTO run (id, method_id, method_version, parameters, parameters_sha256, label, requested_by, client_id,
-                         campaign_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                         campaign_id, retry_of)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                  [run_id, method.id, method.version, Jsonb(parameters), parameters_sha256(parameters), label,
-                  f'client:{actor.name}', actor.id, campaign_id])
+                  f'client:{actor.name}', actor.id, campaign_id, retry_of])
 
 
 def _insert_job(conn, job_id, run_id, observation_id, document):
@@ -931,17 +1350,29 @@ def _insert_job(conn, job_id, run_id, observation_id, document):
                  [job_id, run_id, observation_id, Jsonb(document)])
 
 
-def _run_detail(conn, run_id):
-    run = conn.execute('SELECT * FROM run WHERE id = %s', [run_id]).fetchone()
-    if run is None:
+def _run_detail(conn, run_id, pol: Policy, excluded=()):
+    """One run with its inputs, jobs, and retries. For an agent: 404 for another campaign's run, and no protected
+    observations."""
+    excluded = list(excluded)
+    run = conn.execute("""SELECT r.*, w.campaign_id AS writer_campaign_id FROM run r
+                          LEFT JOIN client w ON w.id = r.client_id WHERE r.id = %s""", [run_id]).fetchone()
+    if run is None or not pol.run_visible(run):
         raise HTTPException(404, 'run not found')
-    run['inputs'] = [r['observation_id'] for r in conn.execute(
+    _text_rule(run, pol)
+    inputs = [r['observation_id'] for r in conn.execute(
         'SELECT observation_id FROM run_input WHERE run_id = %s ORDER BY observation_id', [run_id]).fetchall()]
-    run['jobs'] = conn.execute("""
+    run['inputs'] = [o for o in inputs if o not in excluded]
+    run['protected_excluded'] = len(inputs) - len(run['inputs'])
+    jobs = conn.execute("""
         SELECT id, observation_id, state, attempts, max_attempts, available_at, claimed_by,
-               lease_expires_at, created_at, started_at, finished_at,
+               lease_expires_at, created_at, started_at, finished_at, cancelled_by,
                result ->> 'outcome' AS outcome, result -> 'error' AS error
         FROM job WHERE run_id = %s ORDER BY created_at, id""", [run_id]).fetchall()
+    run['jobs'] = [{**j, 'error': redact_error(j['error'], pol)} for j in jobs
+                   if j['observation_id'] is None or j['observation_id'] not in excluded]
+    scope, args = pol.run_scope('r')
+    run['retries'] = [r['id'] for r in conn.execute(
+        f'SELECT id FROM run r WHERE retry_of = %s AND {scope} ORDER BY created_at, id', [run_id, *args]).fetchall()]
     return run
 
 

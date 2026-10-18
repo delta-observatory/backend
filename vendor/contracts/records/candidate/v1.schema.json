@@ -8,6 +8,7 @@
   "required": ["contract", "kind", "tier", "summary", "observation_ids", "evidence"],
   "properties": {
     "contract": {"const": "candidate/1"},
+    "import_key": {"$ref": "../common/v1.schema.json#/$defs/import_key"},
     "kind": {"enum": ["transit_signal", "moving_object"]},
     "tier": {
       "description": "platform: the evidence includes measurements or jobs of versioned worker methods. lab: the evidence comes from agent code outside the platform. A lab candidate is a proposal, not platform evidence.",

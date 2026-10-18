@@ -1,0 +1,27 @@
+{
+  "contract": "candidate/1",
+  "kind": "transit_signal",
+  "tier": "lab",
+  "label": "C001",
+  "summary": "Box-shaped dip at 1.489 d with depth SNR 12.2 and 19 qualified events in one sector-56 light curve.",
+  "observation_ids": [
+    "fc6cfc26-448f-5ed0-ad3e-adbdfd37dae9"
+  ],
+  "evidence": [
+    {
+      "kind": "external",
+      "uri": "lab:delta-lab/runs/search/352175877/result.json",
+      "sha256": "2a4e90a6f8adc65035803133c8d52634b4bb1ee3933bc0e7605b6d4cb775163c",
+      "bytes": 9150,
+      "description": "Lab BLS search result for the light curve of C001."
+    },
+    {
+      "kind": "external",
+      "uri": "lab:delta-lab/runs/triage/packets/C001",
+      "sha256": "f25c1000887b6f728b17d63fe81aca5f37a89a22c9f1c50e503fa35673dfd708",
+      "bytes": 574634,
+      "description": "Anonymous evidence packet: evidence.png and packet.json."
+    }
+  ],
+  "import_key": "lab:delta-lab/c001"
+}

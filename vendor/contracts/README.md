@@ -26,6 +26,8 @@ The contracts in this directory are the only coupling between the API and worker
 | Method parameters | `methods/<method-id>/v1.schema.json` | This directory | API and workers | Parameter names, units, types, ranges, defaults, and scientific status for each method version. |
 | Columnar artifact | `artifacts/columns/v1.schema.json` | Workers | API and frontend | Equal-length named arrays with units and time conventions. |
 | Research records | `records/<record>/v1.schema.json` | API clients, through the API | API | Candidate, assessment, decision, note, agent task, and agent task report documents. `records/common/v1.schema.json` holds their shared references. |
+| Export manifest | `exports/manifest/v1.schema.json` | API | API clients and export checks | `manifest.json` of an evidence export: subject, exporting client, contract source, withheld values, and the size and SHA-256 of each file. |
+| Selection manifest | `inputs/tess-spoc-selection/v1.schema.json` | `datasets/` repository, after review | Workers | Light-curve files in subdirectories of `raw/<dataset_id>/` that the index method indexes, with owner, registration, size, SHA-256, and source identifier. |
 | Records | `../migrations/` | Database migrations | API and workers | Tables, columns, constraints, and states. |
 
 Method parameter schemas live here so that the API can validate requests without a running worker.
@@ -55,6 +57,7 @@ JSON Schema does not apply `default` values. The API fills defaults before it wr
 | `agent-task-report/1` | `records/agent-task-report/v1.schema.json` | The end of a claimed task: outcome, summary, outputs, and the reason of a failure. |
 
 A record document holds the values that its writer supplies.
+An import route can give a candidate, assessment, decision, or note an `import_key`. A second record with the same key is refused, so a repeated import writes nothing. Agents do not write import keys.
 The API adds the writer, the time, and the campaign. The database adds the state of an agent task.
 A reference names a platform record by kind and ID, or an external file by URI, SHA-256, and size.
 An external file is a proposal, not platform evidence. A `platform` candidate needs a measurement or a job in its evidence.
@@ -90,16 +93,33 @@ contracts/
 ├── artifacts/columns/v1.schema.json
 ├── records/common/v1.schema.json
 ├── records/<record>/v1.schema.json
-└── examples/<job|result|methods|artifacts|records>/<name>.<valid|invalid>.json
+├── exports/manifest/v1.schema.json
+├── inputs/tess-spoc-selection/v1.schema.json
+└── examples/<job|result|methods|artifacts|records|exports|inputs>/<name>.<valid|invalid>.json
 ```
 
 Schemas use JSON Schema, draft 2020-12.
 The `tess-bls` job and result examples come from the closed T01 record for WASP-18 b.
 The lab examples of the candidate and decision records use the C001 drafts of the delta-lab TESS pass.
 Each schema has at least one valid example and one invalid example. `records/common/v1.schema.json` defines no record and has no examples.
-A method or record example name starts with its schema directory, for example `decision-lab-c001-triage.valid.json`.
+A method, record, or input example name starts with its schema directory, for example `decision-lab-c001-triage.valid.json`.
 Record schemas refer to `records/common/v1.schema.json` by `$id`. Consumers resolve the references with a registry of all schemas.
 `scripts/check_contracts.py` checks every schema and example.
+
+## Evidence exports
+
+An export is a ZIP file with `manifest.json` (contract `export/1`) and the files that the manifest lists.
+Each listed file has its size and SHA-256. The manifest holds no request time, so the same request on the same records gives the same bytes.
+An artifact file in an export has the stored bytes. Its `stored_sha256` equals its `sha256` unless blinding redacted it.
+The API README describes the export endpoints and the check script.
+
+## Selected observations
+
+The index method indexes the files in `raw/<dataset_id>/` and, in addition, the files that a selection manifest lists.
+A selection manifest names files in subdirectories, for example the downloads of a research agent. The method does not scan subdirectories.
+Each manifest names the owner of the files and the cohort register entry that registers them. Richard decides each registration.
+The method checks the size and SHA-256 of each listed file. It records the manifest, owner, source identifier, and registration in `observation.provenance`.
+A file with the content of an indexed observation does not become a second observation.
 
 ## Versions
 

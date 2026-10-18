@@ -177,7 +177,7 @@ def test_results_filter_by_observation(client, conn):
 def test_rules_endpoint(client):
     rules = {r['id']: r for r in client.get('/api/rules').json()}
     assert set(rules) == {'period-agreement/1', 'default-run/1', 'target-query/1', 'fold-window/1', 'bls-grid/1',
-                          'candidate-status/1'}
+                          'candidate-status/1', 'run-comparison/1', 'free-text/1'}
     assert rules['period-agreement/1']['thresholds'] == {'match_below': 0.01, 'near_below': 0.05, 'signal_snr_above': 100.0}
     assert rules['target-query/1']['fields']['err']['requires_labels']
 

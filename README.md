@@ -43,11 +43,11 @@ Each token belongs to one client in the `client` table: a person, an agent, or a
 | Permission | Allows |
 |---|---|
 | `read` | Every read endpoint, and `POST /runs/estimate`. |
-| `run.submit` | `POST /runs`, and `POST /jobs/{id}/cancel` for the client's own runs. |
+| `run.submit` | `POST /runs`, `POST /runs/{id}/retry`, and the cancellation of the client's own runs and jobs. |
 | `record.write` | Research-record writes: candidates, assessments, decisions, notes, and agent tasks. `POST /campaigns/{id}/fix-decisions` for an agent of the campaign. |
 | `acquire` | Acquisition of new observations. No endpoint uses it yet. |
 | `identity.reveal` | `POST /campaigns/{id}/reveal`. |
-| `admin` | Client and campaign management, access events, dataset indexing, and cancellation of any job. |
+| `admin` | Client and campaign management, access events, dataset indexing, and cancellation of any run or job. |
 
 Richard decided that an agent never holds `acquire`, `identity.reveal`, or `admin`. The API and a database constraint both refuse it.
 Each write records its client: `run.client_id` and `run.requested_by` (`client:<name>`), and `job.cancelled_by`.
@@ -77,6 +77,24 @@ The lifecycle has this order:
 6. Richard closes the campaign (`POST /campaigns/{id}/close`). After this, the agent reads no observation data and writes nothing.
 
 Each step is valid only after the step before it. A step in the wrong state gives 409. The database checks the same order.
+
+### Agent scope by endpoint
+
+An agent sees the runs of its campaign and the runs without a campaign, for example Richard's runs and the index runs.
+A run of another campaign is "run not found" (404) on every path that reaches it.
+These paths include its jobs, its artifacts, `GET /targets?run_id=`, comparisons, exports, retries, and cancellations.
+A reference to a run, job, measurement, or artifact of another campaign in a record gives "not found" (422).
+
+| Endpoints | Before the approval and after the close | Inside an approved, open campaign |
+|---|---|---|
+| `GET /me`, `GET /methods`, `GET /rules`, `GET /campaigns`, `GET /campaigns/{id}` | Allowed. The agent sees only its campaign. | Allowed. |
+| `GET /datasets`, `/observations`, `/targets` | 403 | Allowed. The API leaves out protected observations. Without identity, dataset findings give path counts, not paths. |
+| `GET /runs`, `/runs/default`, `/runs/{id}`, `/runs/compare` | 403 | Visible runs only. Inputs, jobs, and job counts leave out protected observations, with the number in `protected_excluded`. `default-run/1` chooses among the visible runs. |
+| `GET /runs/{id}/results`, `/runs/{id}/observations/{oid}/fold`, `/jobs/{id}`, `/artifacts/{id}`, `/artifacts/{id}/content` | 403 | Visible runs only. Each observation counts toward the observation budget. A protected observation gives 403 and a refused access event. Without identity, a job error keeps its `kind` and loses `message` and `traceback`. |
+| `POST /runs/estimate`, `POST /runs`, `POST /runs/{id}/retry` | 403 | A protected observation gives 422 and a refused access event. Budgets apply. After `fix-decisions`, `POST /runs` and retries give 403. |
+| `POST /runs/{id}/cancel`, `POST /jobs/{id}/cancel` | 403 | The agent's own runs only. |
+| `GET /runs/{id}/export`, `GET /candidates/{id}/export` | 403 | The same scope, blinding, cohort guard, and budget as the views. |
+| Research records | 403 | The records of the campaign. The next sections give the rules. |
 
 ### Blinding
 
@@ -131,6 +149,11 @@ Records do not change. A correction is a new record. An assessment or a decision
 | Note | Free text about one or more records. A note takes the campaign of its subjects. |
 | Agent task | A unit of agent work in a campaign, with a lease. |
 
+An import route can give a candidate, assessment, decision, or note an `import_key`, for example `research:<agent>/<study>/<item>`.
+A second record with the same key gives 409 with `existing_id` in the detail, so a repeated import writes nothing.
+An agent with an import key gets 403.
+An imported proposal uses tier `lab` and external references. A judgment from an external source is a decision with judge `model`. It is not a measurement.
+
 The status of a candidate follows rule `candidate-status/1`: the newest assessment on each axis gives it.
 Without an assessment, the evidence status is `unreviewed` and the identity status is `unchecked`.
 Each candidate response gives `evidence_status` and `identity_status` with the assessment and its basis.
@@ -168,7 +191,19 @@ A `platform` candidate needs a measurement or a job in its evidence. A `lab` can
 | Cohort guard | A reference to a protected observation, directly or through a measurement, job, or artifact, gives 422 for an agent and writes a refused access event. A record that refers to a protected observation is hidden from the agents. |
 | Budget | `GET /candidates/{id}` counts the observations of the candidate and of its resolved evidence as observation reads. |
 
-The API does not redact free text. A person's note, reason, or summary in a blinded campaign can contain withheld values.
+### Free text
+
+Rule `free-text/1` controls free text while a campaign withholds labels or identity from its agents, before the reveal.
+
+| Text | What an agent of the campaign receives |
+|---|---|
+| Text from a client of the agent's own campaign | The text. |
+| Directed text: the campaign title and question, and the title, instructions, and inputs of an agent task | The text. The API does not check it. Its writer is responsible for its content. |
+| Other writers' text. This includes run labels, candidate summaries and labels, assessment reasons, decision reasons and responses, and note bodies. It also includes task report summaries and reasons, and the URI and description of external references. | Null. The record has `text_withheld: true`. A list or detail response adds `text` to `withheld`. |
+
+Persons and services receive all text.
+The API does not search text for withheld values. A writer can put a withheld value in directed text, and an agent can learn a value from another source.
+This handling therefore does not guarantee scientific blinding. Richard keeps withheld values out of directed text.
 
 ### Agent tasks
 
@@ -202,6 +237,8 @@ Rules have versioned names. `GET /rules` describes them:
 | `fold-window/1` | display | Window and bins of a fold view. A fold is a display calculation, not a stored result. |
 | `bls-grid/1` | estimate | Estimated BLS period grid size of one light curve. |
 | `candidate-status/1` | status | The newest assessment on each axis gives the current status of a candidate. The database view `candidate_status` applies it. |
+| `run-comparison/1` | display | Stored measurements of two runs of one method, side by side. The difference b − a is a display calculation without uncertainty, because both values come from the same observations. |
+| `free-text/1` | access | The free text that an agent receives while blinding withholds values. |
 
 The frontend repeats three calculations while the user types or drags: the target query, the fold, and the parameter checks.
 `tests/vectors/` holds shared cases for these calculations. The API tests and the frontend tests both pass them.
@@ -232,21 +269,26 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /rules` | The named rules that clients apply. |
 | `GET /observations` | Observations with `ra_deg`, `dec_deg`, and `tmag` from the header. Filters: `dataset_id`, `target_id`, `state`, `class` (matches `labels.class`: `planet_host`, `no_known_planet`, or `eclipsing_binary`), `limit` (at most 1000), `offset`. |
 | `GET /targets` | Ready observations with cadence, sky position, magnitude, labels, the search values of one run, and the `period-agreement/1` status. Filters: `run_id`, `dataset_id`, `class`, `in_run`, and `q` (grammar `target-query/1`). `sort` names an attribute, with `-` for descending order. Default: `-depth_snr`. Null values sort last. `limit` (at most 5000), `offset`. A query error gives 422. Without `run_id`, the search values and the status are null, `run_values` is false, and a filter or sort on a run field gives 422. |
-| `GET /observations/{id}` | One observation with header, labels, findings, and light-curve artifacts. |
+| `GET /observations/{id}` | One observation with header, labels, findings, provenance, and light-curve artifacts. `provenance` names the selection manifest, owner, source identifier, and registration of a selected file. It is empty for a file in the dataset directory. |
 | `POST /runs` | Creates a run and one queued job for each observation. The status code is 201. |
 | `POST /runs/estimate` | Checks a run request as `POST /runs` does and writes nothing. Returns the full parameters and the work estimate. The estimate has the trial periods of each observation (rule `bls-grid/1`) and the trial limit. It also has the worker time, from the median rate of the newest 200 complete jobs of the method. A failed check gives the same 422 as `POST /runs`. |
-| `GET /runs` | Runs, newest first, with job counts by state. |
+| `GET /runs` | Runs, newest first, with job counts by state and `retry_of`. |
 | `GET /runs/default` | The default run (rule `default-run/1`). Filters: `dataset_id`, `method_id`, `method_version`. 404 when no analysis run has a complete job. |
-| `GET /runs/{id}` | One run with parameters, inputs, and jobs. |
+| `GET /runs/compare` | Two runs of one method side by side (rule `run-comparison/1`): `run_a`, `run_b`, optional `observation_id`, `limit`, `offset`. Gives `parameter_differences` and counts of observations in both runs, in one run only, and with a different job state. Each observation row gives each run's job, state, measurements, and the display differences. Different methods give 422. |
+| `GET /runs/{id}` | One run with parameters, inputs, jobs, `retry_of`, and `retries`. |
+| `POST /runs/{id}/cancel` | Cancels every queued and running job of the client's own run, or of any run with `admin`. Gives the number of cancelled jobs and of jobs that were running. |
+| `POST /runs/{id}/retry` | A new run for the failed and cancelled jobs of the run. Body: optional `label`. The status code is 201. |
+| `GET /runs/{id}/export` | An evidence export of the run as a ZIP file. `artifacts=none` (default) or `all`. |
 | `GET /runs/{id}/results` | Measurements by role, artifacts, diagnostics, resources, and software for each job. `observation_id` limits the response to one job. |
 | `GET /runs/{id}/observations/{observation_id}/fold` | The stored flattened flux folded and binned (rule `fold-window/1`). Defaults: the stored BLS period and transit time. Options: `period`, `t0`, `window_hours`, `bin_hours`, `t_min`, `t_max`, and `points`. The box model shows only for the stored ephemeris. |
 | `GET /jobs/{id}` | One job with its job and result documents. |
-| `POST /jobs/{id}/cancel` | Cancels a queued job of the client's own run, or any queued job with `admin`. Another state gives 409. |
+| `POST /jobs/{id}/cancel` | Cancels a queued or running job of the client's own run, or of any run with `admin`. The response gives `was_running`. A finished job gives 409. |
 | `GET /artifacts/{id}` | Artifact metadata. |
 | `GET /artifacts/{id}/content` | The stored file. A `gzip` artifact has `Content-Encoding: gzip`. The ETag is the SHA-256. |
 | `POST /candidates` | Writes a `candidate/1` record (`record.write`). A person names the campaign with `campaign_id`. |
 | `GET /candidates` | Candidates with their statuses, newest first. Filters: `campaign_id`, `kind`, `tier`, `evidence_status`, `identity_status`, `observation_id`, `limit`, `offset`. |
 | `GET /candidates/{id}` | One candidate with its observations, resolved evidence, assessments, decisions, and notes. |
+| `GET /candidates/{id}/export` | An evidence export of the candidate as a ZIP file. `artifacts=none` (default) or `all`. |
 | `POST /assessments`, `GET /assessments`, `GET /assessments/{id}` | Writes an `assessment/1` record, and lists assessments, newest first. Filters: `candidate_id`, `campaign_id`, `axis`. |
 | `POST /decisions`, `GET /decisions`, `GET /decisions/{id}` | Writes a `decision/1` record, and lists decisions, newest first. Filters: `candidate_id`, `campaign_id`, `action`. |
 | `POST /notes`, `GET /notes`, `GET /notes/{id}` | Writes a `note/1` record, and lists notes, newest first. Filters: `campaign_id`, and `subject_kind` with `subject_id`. |
@@ -280,9 +322,64 @@ The API writes these resource limits into each job document:
 | `tess-bls` | 600 s | 2048 MiB |
 | `tess-spoc-index` | 1800 s | 1536 MiB |
 
+### Cancellation, failures, and retries
+
+The API cancels a queued job at once. A running job also becomes `cancelled` at once, and the worker stops at a safe boundary:
+1. The worker that holds the job extends its lease every third of the lease length. The deployed lease is 60 s, so this is every 20 s.
+2. The extension fails, because the job is no longer `running`. The worker stops the method process.
+3. The worker discards the output. Its final write also requires the `running` state, so no measurement or artifact row appears.
+
+The files of that attempt stay under `jobs/<job_id>/<attempt>/` without artifact rows. The worker time of a cancelled job is not recorded, so the campaign compute budget does not count it.
+A running index job is not cancelled. An index job stops only at its end.
+A finished job does not change. A database trigger refuses the update.
+
+A failed job keeps its error `kind` and `message`: `contract`, `missing_input`, `time_limit`, `memory_limit`, `lease_lost`, `lease_expired`, `child_exit`, or the exception name of the method.
+The worker does not repeat a failed job. It repeats only a job whose lease expired, up to `max_attempts`, and each attempt starts again: a method does not resume partial work.
+A worker restart returns its running job to the queue.
+`POST /runs/{id}/retry` repeats the failed and cancelled jobs in a new run with `retry_of`, the same method version, the same parameters, and the same campaign. The database checks this.
+The complete and inconclusive jobs of the earlier run stay, and the retry does not repeat them. Measurements are therefore not duplicated.
+An inconclusive job is a scientific outcome, not a technical failure, so a retry does not repeat it.
+The campaign of a retry must be the campaign of the run.
+A person therefore cannot retry an agent's run, and an agent cannot retry a run without a campaign.
+
+### Evidence exports
+
+`GET /runs/{id}/export` and `GET /candidates/{id}/export` return a ZIP file with `manifest.json` (contract `export/1` in `vendor/contracts/exports/manifest/`).
+The manifest lists each other file with its size, SHA-256, media type, and content.
+The header `X-Export-Manifest-SHA256` gives the SHA-256 of the manifest.
+
+| File | Content |
+|---|---|
+| `README.txt` | The subject, the exporting client, the contract source, the files, and the limitations. |
+| `run.json` | The run detail, the method description and parameter schema, and each job with its job document, result document, and software versions. |
+| `runs.json` | The candidate export: each referenced run and its referenced jobs. |
+| `candidate.json` | The candidate export: the candidate detail with resolved evidence, assessments, decisions, notes, and actors. |
+| `records.json` | The run export: the candidates that refer to the run, its jobs, measurements, or artifacts, each with its detail. |
+| `observations.json` | Observation identifiers, file SHA-256, time conventions, header values, and provenance. |
+| `measurements.json`, `measurements.csv` | Measurement ID, job, observation, target, role, name, value, unit, uncertainty, time convention, and quality flags. |
+| `artifacts.json` | Artifact identifiers, kinds, sizes, and SHA-256, including the light curves of the observations. |
+| `methods.json` | Method descriptions and scientific status. |
+| `artifacts/<artifact_id>/<file>` | With `artifacts=all`: the stored artifact bytes. Their `sha256` equals `stored_sha256`. A file that blinding redacted has `redacted: true`. |
+
+The ZIP entries have a fixed date and fixed attributes, and the JSON has sorted keys. The manifest holds no request time.
+The same request on the same stored records therefore gives the same bytes. A new record that refers to the run changes the export.
+An export holds the view of the exporting client. Blinding, the free-text rule, the cohort guard, and the observation budget apply.
+The export lists external files in the evidence by URI, SHA-256, and size. It does not include them.
+The API builds the ZIP file in a temporary file. Up to 32 MiB stay in memory, and a larger export uses `/tmp`.
+
+Check an export with the script. It needs only the Python standard library. `--schema` also checks the manifest with `jsonschema`:
+
+```bash
+python scripts/verify_export.py export.zip --schema vendor/contracts/exports/manifest/v1.schema.json
+```
+
+The script checks the size and SHA-256 of each listed file. It also finds files that the manifest does not list and unsafe paths.
+It reports an artifact file whose SHA-256 differs from the stored SHA-256 without the redacted mark.
+It prints a JSON report. The exit status is 1 when a check fails.
+
 ### Measurements
 
-Each measurement has `role`, `name`, `value`, `unit`, `uncertainty`, and `quality_flags`.
+Each measurement has `id`, `role`, `name`, `value`, `unit`, `uncertainty`, and `quality_flags`. A record refers to a measurement by its `id`.
 `uncertainty` is `{"kind": "standard", "value": …}` or `{"kind": "unavailable", "reason": …}`.
 A time value also has `time_scale` and `time_reference`.
 
@@ -295,7 +392,10 @@ They apply `vendor/migrations/` to it. They do not use mocks for the database.
 `test_records.py` checks the record documents, the separation of measurements, judgments, and statuses, the decision freeze, campaign isolation, blinded responses, reference integrity, and permissions.
 `test_tasks.py` checks claim order, parallel claims, and a claim next to a locked task.
 It also checks lease expiry and recovery, lease ownership, release, cancellation, and the campaign lifecycle of tasks.
-`test_migrations.py` applies migration 0004 to a database that holds records of the earlier migrations.
+`test_migrations.py` applies migrations 0004 and 0005 to a database that holds records of the earlier migrations.
+`test_workflow.py` checks run scope for agents, the lifecycle of agent reads, and the protected observations in run views.
+It checks identity redaction of paths, errors, and provenance, and the free-text rule.
+It also checks running-job cancellation, retries, run comparison, reproducible exports and the check script, and import keys.
 `test_rules.py` checks the rules against `tests/vectors/`. `test_parity_api.py` checks the client-parity endpoints, including the SQL form of the target query against the vectors.
 
 ```bash

@@ -8,6 +8,7 @@
   "required": ["contract", "candidate_id", "axis", "status", "basis", "reason"],
   "properties": {
     "contract": {"const": "assessment/1"},
+    "import_key": {"$ref": "../common/v1.schema.json#/$defs/import_key"},
     "candidate_id": {"$ref": "../common/v1.schema.json#/$defs/uuid"},
     "axis": {"enum": ["evidence", "identity"]},
     "status": {"enum": ["unreviewed", "supported", "ambiguous", "rejected", "unchecked", "matched", "unmatched"]},

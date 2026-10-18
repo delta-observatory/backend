@@ -7,6 +7,10 @@ An agent works inside its campaign:
   open (nothing withheld), labels (known-object labels withheld), labels_identity (labels and catalog identity withheld).
 - The cohort guard refuses each read of an observation that an evaluation reservation protects, and records the refusal.
 - Budgets limit the distinct observations read, the jobs, the compute time, and the stored bytes of the campaign.
+- An agent sees the runs of its campaign and the runs without a campaign. Another campaign's run is "not found".
+- Rule free-text/1: while blinding withholds values, an agent receives free text from the clients of its own campaign
+  and directed text (campaign title and question, task title and instructions). Other writers' free text is null.
+  The API does not search text for withheld values. This handling does not guarantee scientific blinding.
 """
 from dataclasses import dataclass
 
@@ -28,7 +32,7 @@ BUDGET_KEYS = {
 IDENTITY_SAFE_HEADER = {'SECTOR', 'TESSMAG', 'TEFF', 'LOGG', 'MH', 'RADIUS', 'CROWDSAP', 'FLFRCSAP', 'PDCVAR',
                         'PDCMETHD', 'CDPP0_5', 'CDPP1_0', 'CDPP2_0', 'PROCVER', 'DATA_REL', 'TIMEDEL', 'TIMESYS',
                         'TIMEUNIT', 'TIMEREF', 'BJDREFI', 'BJDREFF', 'TSTART', 'TSTOP', 'fits_checksums'}
-IDENTITY_FIELDS = ('target_id', 'relative_path', 'sha256', 'ra_deg', 'dec_deg')
+IDENTITY_FIELDS = ('target_id', 'relative_path', 'sha256', 'ra_deg', 'dec_deg', 'provenance')
 # Diagnostic keys of a result that compare the search with a known object.
 LABEL_DIAGNOSTICS = ('reference_comparison', 'reference')
 
@@ -65,6 +69,25 @@ class Policy:
         if not self.identity_visible:
             out.append('identity')
         return out
+
+    @property
+    def text_rule(self) -> bool:
+        """True when rule free-text/1 withholds other writers' free text from this client."""
+        return self.agent and bool(self.withheld())
+
+    def text_visible(self, writer_campaign_id) -> bool:
+        """Free text from a writer whose client belongs to writer_campaign_id."""
+        return not self.text_rule or (writer_campaign_id is not None and writer_campaign_id == self.campaign['id'])
+
+    def run_visible(self, run: dict) -> bool:
+        """An agent sees the runs of its campaign and the runs without a campaign."""
+        return not self.agent or run['campaign_id'] is None or run['campaign_id'] == self.campaign['id']
+
+    def run_scope(self, alias: str = 'r') -> tuple[str, list]:
+        """SQL condition and arguments: the run with the table alias is visible to the client."""
+        if not self.agent:
+            return 'true', []
+        return f'({alias}.campaign_id IS NULL OR {alias}.campaign_id = %s)', [self.campaign['id']]
 
     def require_active(self, operation: str):
         """An agent reads observation data and writes only inside an approved campaign that is not closed."""
@@ -136,6 +159,13 @@ class Guard:
                 raise HTTPException(503, f'the cohort guard is unavailable: {error}') from error
             return {}
 
+    def refuse(self, conn, policy: Policy, protected: dict, operation: str):
+        """Record a refused read or write of each protected observation by an agent."""
+        for oid, reservation in protected.items():
+            conn.execute("""INSERT INTO access_event (client_id, campaign_id, observation_id, reservation_id, outcome, operation)
+                            VALUES (%s, %s, %s, %s, 'refused', %s)""",
+                         [policy.actor.id, policy.campaign and policy.campaign['id'], oid, reservation, operation])
+
     def read(self, conn, policy: Policy, observation_ids, operation: str):
         """Check and record a read of observation data. Refuses protected observations and reads past the budget."""
         ids = [i for i in dict.fromkeys(observation_ids) if i is not None]
@@ -190,6 +220,28 @@ def redact_observation(row: dict, policy: Policy) -> dict:
     if policy.withheld():
         row['withheld'] = policy.withheld()
     return row
+
+
+def redact_error(error, policy: Policy):
+    """A job error. Without identity, the message and traceback can name files, so only the kind stays."""
+    if policy.identity_visible or not isinstance(error, dict):
+        return error
+    return {**error, 'message': None, **({'traceback': None} if 'traceback' in error else {}), 'withheld': ['identity']}
+
+
+def redact_findings(findings, policy: Policy):
+    """Dataset findings. Without identity, file paths become a count."""
+    if policy.identity_visible or not isinstance(findings, list):
+        return findings
+    out = []
+    for finding in findings:
+        if isinstance(finding, dict) and ('path' in finding or 'paths' in finding):
+            count = (1 if 'path' in finding else 0) + len(finding.get('paths') or [])
+            finding = {k: v for k, v in finding.items() if k not in ('path', 'paths')}
+            finding['path_count'] = count
+            finding['withheld'] = ['identity']
+        out.append(finding)
+    return out
 
 
 def redact_target(row: dict, policy: Policy) -> dict:

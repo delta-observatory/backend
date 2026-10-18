@@ -1,0 +1,16 @@
+{
+  "format": "tess-spoc-selection/1",
+  "dataset_id": "tess-spoc-light-curves",
+  "owner": "delta-research search-a61de640-3c7c-4d65-b80c-2a1d6855eecb",
+  "registration": "example-registration-entry",
+  "reason": "Light curves of the retained candidates of one published search report.",
+  "files": [
+    {
+      "relative_path": "tess2022244194134-s0056-0000000097249304-0243-s_lc.fits",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "bytes": 1983680,
+      "source_id": "mast:TESS/product/tess2022244194134-s0056-0000000097249304-0243-s_lc.fits",
+      "target_id": "TIC:97249304"
+    }
+  ]
+}

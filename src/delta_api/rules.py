@@ -136,7 +136,51 @@ class CandidateStatus:
                 'requires_labels': {'evidence': False, 'identity': True}}
 
 
+@dataclass(frozen=True)
+class RunComparison:
+    """Side-by-side stored measurements of two runs of one method, and their differences."""
+    id: str = 'run-comparison/1'
+    difference_reason: str = 'Both values come from the same observations, so their errors are correlated.'
+
+    def difference(self, a: dict | None, b: dict | None) -> dict | None:
+        """b − a for two numeric measurements with the same unit. A display calculation without uncertainty."""
+        if a is None or b is None or a['unit'] != b['unit']:
+            return None
+        va, vb = a['value'], b['value']
+        if isinstance(va, bool) or isinstance(vb, bool) or not isinstance(va, (int, float)) or not isinstance(vb, (int, float)):
+            return None
+        return {'value': vb - va, 'unit': a['unit'], 'display_calculation': True, 'rule': self.id,
+                'uncertainty': {'kind': 'unavailable', 'reason': self.difference_reason}}
+
+    def describe(self) -> dict:
+        return {'id': self.id, 'kind': 'display',
+                'summary': 'Rows for the union of the inputs of two runs of one method. Each row gives the stored '
+                           'measurements of each run by role and name. The difference is b − a for numeric pairs with '
+                           'the same unit. It is a display calculation, not a stored result, and has no uncertainty: '
+                           + self.difference_reason,
+                'parameter_differences': 'Leaf values of the two parameter documents that differ, by dotted path.'}
+
+
+@dataclass(frozen=True)
+class FreeText:
+    """Free text that an agent receives while blinding withholds values."""
+    id: str = 'free-text/1'
+
+    def describe(self) -> dict:
+        return {'id': self.id, 'kind': 'access',
+                'summary': 'While a campaign withholds labels or identity from its agents, an agent receives the free text '
+                           'that clients of its own campaign wrote, and directed text: the campaign title and question, '
+                           'and the title and instructions of agent tasks. Other free text is null, and the record has '
+                           'text_withheld true: run labels, candidate summaries and labels, assessment reasons, decision '
+                           'reasons and responses, note bodies, task report summaries and reasons, and the URI and '
+                           'description of external references. Persons and services receive all text.',
+                'limits': 'The API does not search text for withheld values. Directed text and text from the '
+                          "campaign's own clients can contain withheld values. This rule does not guarantee scientific blinding."}
+
+
 PERIOD_AGREEMENT = PeriodAgreement()
+RUN_COMPARISON = RunComparison()
+FREE_TEXT = FreeText()
 CANDIDATE_STATUS = CandidateStatus()
 DEFAULT_RUN = DefaultRun()
 FOLD_WINDOW = FoldWindow()

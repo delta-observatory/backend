@@ -10,6 +10,9 @@ Campaign rules for an agent:
   Identity assessments come from worker methods or people.
 - A record that refers to a value that blinding withholds, or to a protected observation, is hidden from the agent.
   A reference to a protected observation in a write is refused and recorded as an access event.
+- Rule free-text/1: while blinding withholds values, an agent gets the free text of its own campaign's clients and the
+  directed text of tasks. Other writers' free text is null, and the record has text_withheld true.
+- An import route can give a record an import_key. A second record with the same key gives 409. Agents do not write keys.
 """
 from contextlib import contextmanager
 from typing import Annotated
@@ -56,6 +59,9 @@ REF_INFO = {
 }
 
 TASK_FAILED_REASON = 'The lease expired on every permitted attempt.'
+# Platform records that a run owns. An agent sees those of its campaign and those without a campaign.
+RUN_SCOPED = {'run', 'job', 'measurement', 'artifact'}
+IMPORT_TABLES = {'candidate': 'candidate', 'assessment': 'assessment', 'decision': 'decision', 'note': 'note'}
 
 
 @contextmanager
@@ -131,6 +137,14 @@ class View:
     def withheld(self) -> list[str]:
         return self.pol.withheld()
 
+    def text_hidden(self, writer_campaign_id) -> bool:
+        """Rule free-text/1: True when the client does not get the free text of this writer."""
+        return not self.pol.text_visible(writer_campaign_id)
+
+    def listed(self, items: list[dict]) -> list[str]:
+        """The withheld groups of a response, with "text" when rule free-text/1 withheld text in an item."""
+        return self.withheld() + (['text'] if any(i.get('text_withheld') for i in items) else [])
+
 
 def check_refs(conn, viewer: Policy, refs: list[dict], loc: list, campaign_id) -> tuple[list[dict], list]:
     """Check the references of a new record. Return the errors and the observations that the references touch.
@@ -150,6 +164,11 @@ def check_refs(conn, viewer: Policy, refs: list[dict], loc: list, campaign_id) -
             continue
         target_campaign = row['campaign_id']
         if viewer.agent and kind in SCOPED and target_campaign != viewer.actor.campaign_id:
+            errors.append({'loc': at, 'msg': f'{kind} {ref["id"]} not found'})
+            continue
+        # An agent does not see the runs of another campaign. They are "not found", as in the run views.
+        if viewer.actor.kind == 'agent' and viewer.actor.id.int != 0 and kind in RUN_SCOPED \
+                and target_campaign is not None and target_campaign != viewer.actor.campaign_id:
             errors.append({'loc': at, 'msg': f'{kind} {ref["id"]} not found'})
             continue
         if campaign_id is not None and target_campaign is not None and target_campaign != campaign_id:
@@ -236,7 +255,7 @@ def actor_of(row: dict) -> dict:
 CANDIDATE_SELECT = """
     SELECT c.*, s.evidence_status, s.evidence_assessment_id, s.evidence_basis,
            identity_s.identity_status, identity_s.identity_assessment_id, identity_s.identity_basis,
-           w.name AS actor_name, w.kind AS actor_kind,
+           w.name AS actor_name, w.kind AS actor_kind, w.campaign_id AS actor_campaign_id,
            ARRAY(SELECT observation_id FROM candidate_observation co WHERE co.candidate_id = c.id
                  ORDER BY observation_id) AS observation_ids
     FROM candidate c JOIN candidate_status stored ON stored.candidate_id = c.id
@@ -252,17 +271,20 @@ CANDIDATE_SELECT = """
     ) identity_s ON true
     JOIN client w ON w.id = c.created_by"""
 ASSESSMENT_SELECT = """
-    SELECT a.*, c.campaign_id, w.name AS actor_name, w.kind AS actor_kind
+    SELECT a.*, c.campaign_id, w.name AS actor_name, w.kind AS actor_kind, w.campaign_id AS actor_campaign_id
     FROM assessment a JOIN candidate c ON c.id = a.candidate_id JOIN client w ON w.id = a.created_by"""
 DECISION_SELECT = """
-    SELECT d.*, c.campaign_id, w.name AS actor_name, w.kind AS actor_kind
+    SELECT d.*, c.campaign_id, w.name AS actor_name, w.kind AS actor_kind, w.campaign_id AS actor_campaign_id
     FROM decision d JOIN candidate c ON c.id = d.candidate_id JOIN client w ON w.id = d.created_by"""
 NOTE_SELECT = """
-    SELECT n.*, w.name AS actor_name, w.kind AS actor_kind FROM note n JOIN client w ON w.id = n.created_by"""
+    SELECT n.*, w.name AS actor_name, w.kind AS actor_kind, w.campaign_id AS actor_campaign_id
+    FROM note n JOIN client w ON w.id = n.created_by"""
 TASK_SELECT = """
     SELECT t.*, w.name AS actor_name, w.kind AS actor_kind, h.name AS claimed_by_name,
+           h.campaign_id AS claimed_by_campaign_id, k.campaign_id AS cancelled_by_campaign_id,
            (t.state = 'claimed' AND t.lease_expires_at < now()) AS lease_expired
-    FROM agent_task t JOIN client w ON w.id = t.created_by LEFT JOIN client h ON h.id = t.claimed_by"""
+    FROM agent_task t JOIN client w ON w.id = t.created_by LEFT JOIN client h ON h.id = t.claimed_by
+    LEFT JOIN client k ON k.id = t.cancelled_by"""
 
 
 def candidate_select(view: View) -> str:
@@ -271,12 +293,27 @@ def candidate_select(view: View) -> str:
     return CANDIDATE_SELECT.format(evidence_hidden=hidden, identity_hidden=hidden)
 
 
+def masked(refs: list[dict], hidden: bool) -> list[dict]:
+    """External references without their URI and description, when rule free-text/1 withholds the writer's text."""
+    if not hidden:
+        return refs
+    return [{**r, 'uri': None, **({'description': None} if 'description' in r else {})} if r['kind'] == 'external' else r
+            for r in refs]
+
+
+def text(value, hidden: bool):
+    return None if hidden else value
+
+
 def candidate_out(row: dict, links: dict, view: View) -> dict:
     labels_visible = view.pol.labels_visible
+    hidden = view.text_hidden(row['actor_campaign_id'])
     return {
-        'contract': 'candidate/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'label': row['label'],
-        'kind': row['kind'], 'tier': row['tier'], 'summary': row['summary'],
-        'observation_ids': row['observation_ids'], 'evidence': links.get(row['id'], {}).get('evidence', []),
+        'contract': 'candidate/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'label': text(row['label'], hidden),
+        'kind': row['kind'], 'tier': row['tier'], 'summary': text(row['summary'], hidden),
+        'observation_ids': row['observation_ids'],
+        'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden),
+        'import_key': row['import_key'], 'text_withheld': hidden,
         'status_rule': 'candidate-status/1',
         'evidence_status': {'status': row['evidence_status'], 'assessment_id': row['evidence_assessment_id'],
                             'basis': row['evidence_basis']} if row['evidence_status'] is not None else None,
@@ -287,18 +324,20 @@ def candidate_out(row: dict, links: dict, view: View) -> dict:
     }
 
 
-def assessment_out(row: dict, links: dict) -> dict:
+def assessment_out(row: dict, links: dict, view: View) -> dict:
+    hidden = view.text_hidden(row['actor_campaign_id'])
     return {
         'contract': 'assessment/1', 'id': row['id'], 'candidate_id': row['candidate_id'], 'campaign_id': row['campaign_id'],
         'axis': row['axis'], 'status': row['status'], 'basis': row['basis'],
         'method': {'id': row['method_id'], 'version': row['method_version']} if row['method_id'] else None,
-        'decision_id': row['decision_id'], 'reason': row['reason'], 'quality_flags': list(row['quality_flags']),
-        'evidence': links.get(row['id'], {}).get('evidence', []), 'supersedes': row['supersedes'],
-        'actor': actor_of(row), 'created_at': row['created_at'],
+        'decision_id': row['decision_id'], 'reason': text(row['reason'], hidden), 'quality_flags': list(row['quality_flags']),
+        'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden), 'supersedes': row['supersedes'],
+        'import_key': row['import_key'], 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
     }
 
 
-def decision_out(row: dict, links: dict) -> dict:
+def decision_out(row: dict, links: dict, view: View) -> dict:
+    hidden = view.text_hidden(row['actor_campaign_id'])
     if row['judge'] == 'person':
         model = None
     elif row['model_reason'] is not None:
@@ -314,20 +353,32 @@ def decision_out(row: dict, links: dict) -> dict:
                    else {'kind': 'unavailable', 'reason': row['packet_reason']}),
         'policy': ({'kind': 'identified', 'id': row['policy_id'], 'version': row['policy_version']} if row['policy_id']
                    else {'kind': 'unavailable', 'reason': row['policy_reason']}),
-        'judged_evidence_status': row['judged_evidence_status'], 'action': row['action'], 'reason': row['reason'],
-        'evidence': links.get(row['id'], {}).get('evidence', []), 'response': row['response'], 'scores': row['scores'],
+        'judged_evidence_status': row['judged_evidence_status'], 'action': row['action'],
+        'reason': text(row['reason'], hidden), 'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden),
+        'response': text(row['response'], hidden), 'scores': row['scores'],
         'withheld_from_writer': list(row['withheld']), 'supersedes': row['supersedes'],
-        'actor': actor_of(row), 'created_at': row['created_at'],
+        'import_key': row['import_key'], 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
     }
 
 
-def note_out(row: dict, links: dict) -> dict:
-    return {'contract': 'note/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'body': row['body'],
-            'subjects': links.get(row['id'], {}).get('subject', []), 'actor': actor_of(row), 'created_at': row['created_at']}
+def note_out(row: dict, links: dict, view: View) -> dict:
+    hidden = view.text_hidden(row['actor_campaign_id'])
+    return {'contract': 'note/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'body': text(row['body'], hidden),
+            'subjects': masked(links.get(row['id'], {}).get('subject', []), hidden), 'import_key': row['import_key'],
+            'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at']}
 
 
-def task_out(row: dict, links: dict) -> dict:
+def task_out(row: dict, links: dict, view: View) -> dict:
     task_links = links.get(row['id'], {})
+    # The title, instructions, and inputs are directed text: the API gives them to the agents of the campaign.
+    # The report summary and outputs come from the claimant. A cancellation reason comes from the client that cancelled.
+    report_hidden = row['claimed_by'] is not None and view.text_hidden(row['claimed_by_campaign_id'])
+    if row['state'] == 'cancelled':
+        reason_hidden = row['cancelled_by'] is not None and view.text_hidden(row['cancelled_by_campaign_id'])
+    else:
+        reason_hidden = report_hidden and row['reason'] != TASK_FAILED_REASON
+    hidden = (report_hidden and (row['summary'] is not None or bool(task_links.get('output')))) or \
+        (reason_hidden and row['reason'] is not None)
     return {
         'contract': 'agent-task/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'kind': row['kind'],
         'title': row['title'], 'instructions': row['instructions'], 'priority': row['priority'],
@@ -335,8 +386,9 @@ def task_out(row: dict, links: dict) -> dict:
         'attempts': row['attempts'],
         'claimed_by': {'id': row['claimed_by'], 'name': row['claimed_by_name']} if row['claimed_by'] else None,
         'claimed_at': row['claimed_at'], 'lease_expires_at': row['lease_expires_at'], 'lease_expired': row['lease_expired'],
-        'inputs': task_links.get('input', []), 'outputs': task_links.get('output', []),
-        'summary': row['summary'], 'reason': row['reason'], 'cancelled_by': row['cancelled_by'],
+        'inputs': task_links.get('input', []), 'outputs': masked(task_links.get('output', []), report_hidden),
+        'summary': text(row['summary'], report_hidden), 'reason': text(row['reason'], reason_hidden),
+        'cancelled_by': row['cancelled_by'], 'text_withheld': hidden,
         'actor': actor_of(row), 'created_at': row['created_at'], 'finished_at': row['finished_at'],
     }
 
@@ -424,6 +476,18 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
             raise ValidationFailure(errors)
         guard_writes(conn, guard, viewer, actor, observations, operation)
 
+    def import_key(conn, actor: Actor, kind: str, doc: dict):
+        """An import key is for import routes. A second record with the same key gives 409 with the existing ID."""
+        key = doc.get('import_key')
+        if key is None:
+            return None
+        if actor.kind == 'agent':
+            raise HTTPException(403, 'agents do not write import keys')
+        existing = conn.execute(f'SELECT id FROM {IMPORT_TABLES[kind]} WHERE import_key = %s', [key]).fetchone()
+        if existing is not None:
+            raise HTTPException(409, {'msg': f'a {kind} with import key {key} exists', 'existing_id': str(existing['id'])})
+        return key
+
     # Candidates --------------------------------------------------------
 
     @api.post('/candidates', status_code=201)
@@ -432,6 +496,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         """Write a candidate/1 record. Its evidence status starts as unreviewed and its identity status as unchecked."""
         doc = contracts.record('candidate/1', document)
         pol = policy_for(conn, actor)
+        key = import_key(conn, actor, 'candidate', doc)
         campaign = write_campaign(conn, actor, pol, campaign_id, 'a candidate')
         cid = campaign and campaign['id']
         found = {r['id'] for r in conn.execute('SELECT id FROM observation WHERE id = ANY(%s::uuid[])',
@@ -446,9 +511,10 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
             raise ValidationFailure(errors)
         guard_writes(conn, guard, pol, actor, observations + more, 'candidate write')
         with record_rules(), conn.transaction():
-            new_id = conn.execute("""INSERT INTO candidate (campaign_id, label, kind, tier, summary, created_by)
-                                     VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                                  [cid, doc.get('label'), doc['kind'], doc['tier'], doc['summary'], actor.id]).fetchone()['id']
+            new_id = conn.execute("""INSERT INTO candidate (campaign_id, label, kind, tier, summary, import_key, created_by)
+                                     VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                  [cid, doc.get('label'), doc['kind'], doc['tier'], doc['summary'], key,
+                                   actor.id]).fetchone()['id']
             with conn.cursor() as cur:
                 cur.executemany('INSERT INTO candidate_observation VALUES (%s, %s)', [(new_id, o) for o in doc['observation_ids']])
             insert_links(conn, 'candidate', new_id, 'evidence', doc['evidence'])
@@ -481,8 +547,8 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         total, rows = page(conn, view, 'candidate', candidate_select(view), 'c', 'c.campaign_id', where, args, limit, offset,
                            'c.created_at DESC, c.id')
         links = links_of(conn, 'candidate', [r['id'] for r in rows])
-        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.withheld(),
-                'items': [candidate_out(r, links, view) for r in rows]}
+        items = [candidate_out(r, links, view) for r in rows]
+        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.listed(items), 'items': items}
 
     @api.get('/candidates/{candidate_id}')
     def get_candidate(candidate_id: uuid.UUID, conn: Conn, actor: Reader):
@@ -503,6 +569,10 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
                                           limit=1000, offset=0)['items']
         out['notes'] = list_notes(conn, actor, campaign_id=None, subject_kind='candidate', subject_id=str(candidate_id),
                                   limit=1000, offset=0)['items']
+        out['withheld'] = view_withheld = list(out['withheld'])
+        if any(r.get('text_withheld') for r in [out, *out['assessments'], *out['decisions'], *out['notes']]) \
+                and 'text' not in view_withheld:
+            view_withheld.append('text')
         return out
 
     def candidate_record(conn, view: View, candidate_id) -> dict:
@@ -542,6 +612,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
             if doc['basis'] != 'model_judgment':
                 raise HTTPException(403, 'an agent writes its judgment as a decision and cites it with basis model_judgment')
             pol.require_active('an assessment')
+        key = import_key(conn, actor, 'assessment', doc)
         view = View(conn, pol, guard)
         candidate = visible_candidate(conn, view, doc['candidate_id'], ['body', 'candidate_id'])
         cid = candidate['campaign_id']
@@ -551,11 +622,11 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         with record_rules(), conn.transaction():
             new_id = conn.execute("""
                 INSERT INTO assessment (candidate_id, axis, status, basis, method_id, method_version, decision_id, reason,
-                                        quality_flags, supersedes, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                        quality_flags, supersedes, import_key, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                 [doc['candidate_id'], doc['axis'], doc['status'], doc['basis'], (doc.get('method') or {}).get('id'),
                  (doc.get('method') or {}).get('version'), doc.get('decision_id'), doc['reason'],
-                 doc.get('quality_flags', []), doc.get('supersedes'), actor.id]).fetchone()['id']
+                 doc.get('quality_flags', []), doc.get('supersedes'), key, actor.id]).fetchone()['id']
             insert_links(conn, 'assessment', new_id, 'evidence', doc.get('evidence', []))
         return get_assessment(new_id, conn, actor)
 
@@ -579,14 +650,14 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         total, rows = page(conn, view, 'assessment', ASSESSMENT_SELECT, 'a', 'c.campaign_id', where, args, limit, offset,
                            'a.seq DESC')
         links = links_of(conn, 'assessment', [r['id'] for r in rows])
-        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.withheld(),
-                'items': [assessment_out(r, links) for r in rows]}
+        items = [assessment_out(r, links, view) for r in rows]
+        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.listed(items), 'items': items}
 
     @api.get('/assessments/{assessment_id}')
     def get_assessment(assessment_id: uuid.UUID, conn: Conn, actor: Reader):
         view = View(conn, policy_for(conn, actor), guard)
         row = one(conn, view, 'assessment', ASSESSMENT_SELECT, 'a', assessment_id, 'c.campaign_id')
-        return assessment_out(row, links_of(conn, 'assessment', [row['id']]))
+        return assessment_out(row, links_of(conn, 'assessment', [row['id']]), view)
 
     # Decisions ----------------------------------------------------------
 
@@ -600,6 +671,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
             if doc['judge'] != 'model':
                 raise HTTPException(403, 'an agent writes model judgments: judge must be "model"')
             pol.require_active('a decision')
+        key = import_key(conn, actor, 'decision', doc)
         view = View(conn, pol, guard)
         candidate = visible_candidate(conn, view, doc['candidate_id'], ['body', 'candidate_id'])
         groups = [([{'kind': kind, 'id': doc[key]}], ['body', key])
@@ -612,15 +684,15 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
                 INSERT INTO decision (candidate_id, assessment_id, question_id, question_version, mode, judge,
                                       model_provider, model_id, model_reason, packet_sha256, packet_reason,
                                       policy_id, policy_version, policy_reason, judged_evidence_status, action, reason,
-                                      response, scores, withheld, supersedes, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      response, scores, withheld, supersedes, import_key, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id""",
                 [doc['candidate_id'], doc.get('assessment_id'), doc['question']['id'], doc['question']['version'],
                  doc['mode'], doc['judge'], model.get('provider'), model.get('id'), model.get('reason'),
                  packet.get('sha256'), packet.get('reason'), policy.get('id'), policy.get('version'), policy.get('reason'),
                  doc['judged_evidence_status'], doc['action'], doc['reason'],
                  Jsonb(doc['response']) if 'response' in doc else None, Jsonb(doc['scores']) if 'scores' in doc else None,
-                 pol.withheld(), doc.get('supersedes'), actor.id]).fetchone()['id']
+                 pol.withheld(), doc.get('supersedes'), key, actor.id]).fetchone()['id']
             insert_links(conn, 'decision', new_id, 'evidence', doc['evidence'])
         return get_decision(new_id, conn, actor)
 
@@ -640,14 +712,14 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         total, rows = page(conn, view, 'decision', DECISION_SELECT, 'd', 'c.campaign_id', where, args, limit, offset,
                            'd.created_at DESC, d.id')
         links = links_of(conn, 'decision', [r['id'] for r in rows])
-        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.withheld(),
-                'items': [decision_out(r, links) for r in rows]}
+        items = [decision_out(r, links, view) for r in rows]
+        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.listed(items), 'items': items}
 
     @api.get('/decisions/{decision_id}')
     def get_decision(decision_id: uuid.UUID, conn: Conn, actor: Reader):
         view = View(conn, policy_for(conn, actor), guard)
         row = one(conn, view, 'decision', DECISION_SELECT, 'd', decision_id, 'c.campaign_id')
-        return decision_out(row, links_of(conn, 'decision', [row['id']]))
+        return decision_out(row, links_of(conn, 'decision', [row['id']]), view)
 
     # Notes --------------------------------------------------------------
 
@@ -659,6 +731,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         pol = policy_for(conn, actor)
         if pol.agent:
             pol.require_active('a note')
+        key = import_key(conn, actor, 'note', doc)
         subjects = doc['subjects']
         campaigns = {r['c'] for r in conn.execute(
             'SELECT record_campaign(k, i) AS c FROM unnest(%s::text[], %s::text[]) AS s (k, i)',
@@ -669,8 +742,8 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         cid = pol.campaign['id'] if pol.agent else next(iter(campaigns), None)
         checked(conn, actor, pol, cid, [(subjects, ['body', 'subjects'])], 'note write')
         with record_rules(), conn.transaction():
-            new_id = conn.execute('INSERT INTO note (campaign_id, body, created_by) VALUES (%s, %s, %s) RETURNING id',
-                                  [cid, doc['body'], actor.id]).fetchone()['id']
+            new_id = conn.execute('INSERT INTO note (campaign_id, body, import_key, created_by) VALUES (%s, %s, %s, %s) RETURNING id',
+                                  [cid, doc['body'], key, actor.id]).fetchone()['id']
             insert_links(conn, 'note', new_id, 'subject', subjects)
         return get_note(new_id, conn, actor)
 
@@ -692,14 +765,14 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         total, rows = page(conn, view, 'note', NOTE_SELECT, 'n', 'n.campaign_id', where, args, limit, offset,
                            'n.created_at DESC, n.id')
         links = links_of(conn, 'note', [r['id'] for r in rows])
-        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.withheld(),
-                'items': [note_out(r, links) for r in rows]}
+        items = [note_out(r, links, view) for r in rows]
+        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.listed(items), 'items': items}
 
     @api.get('/notes/{note_id}')
     def get_note(note_id: uuid.UUID, conn: Conn, actor: Reader):
         view = View(conn, policy_for(conn, actor), guard)
         row = one(conn, view, 'note', NOTE_SELECT, 'n', note_id, 'n.campaign_id')
-        return note_out(row, links_of(conn, 'note', [row['id']]))
+        return note_out(row, links_of(conn, 'note', [row['id']]), view)
 
     # Agent tasks --------------------------------------------------------
 
@@ -737,7 +810,8 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
         total, rows = page(conn, view, 'agent_task', TASK_SELECT, 't', 't.campaign_id', where, args, limit, offset,
                            't.priority DESC, t.created_at, t.id')
         links = links_of(conn, 'agent_task', [r['id'] for r in rows])
-        return {'total': total, 'limit': limit, 'offset': offset, 'items': [task_out(r, links) for r in rows]}
+        items = [task_out(r, links, view) for r in rows]
+        return {'total': total, 'limit': limit, 'offset': offset, 'withheld': view.listed(items), 'items': items}
 
     @api.get('/tasks/{task_id}')
     def get_task(task_id: uuid.UUID, conn: Conn, actor: Reader):
@@ -746,7 +820,7 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
 
     def task_record(conn, view: View, task_id) -> dict:
         row = one(conn, view, 'agent_task', TASK_SELECT, 't', task_id, 't.campaign_id')
-        return task_out(row, links_of(conn, 'agent_task', [row['id']]))
+        return task_out(row, links_of(conn, 'agent_task', [row['id']]), view)
 
     @api.post('/tasks/claim')
     def claim_task(request: ClaimRequest, conn: Conn, actor: RecordWriter,
@@ -862,4 +936,24 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
                 raise HTTPException(409, f'the task is {state}. Only a queued or claimed task can be cancelled.')
         return get_task(task_id, conn, actor)
 
+    def records_about(conn, actor: Actor, *, run_ids=(), job_ids=(), measurement_ids=(), artifact_ids=()) -> dict:
+        """The visible candidates whose records refer to the run, its jobs, measurements, or artifacts, each with its
+        detail: resolved evidence, assessments, decisions, notes, and actors. For an evidence export."""
+        view = View(conn, policy_for(conn, actor), guard)
+        rows = conn.execute(f"""
+            SELECT c.id FROM candidate c
+            WHERE {view.scope('c.campaign_id')} AND NOT {view.hidden('candidate', 'c')}
+              AND EXISTS (
+                SELECT 1 FROM record_link l
+                LEFT JOIN assessment la ON la.id = l.assessment_id LEFT JOIN decision ld ON ld.id = l.decision_id
+                WHERE (l.candidate_id = c.id OR la.candidate_id = c.id OR ld.candidate_id = c.id)
+                  AND (l.ref_run = ANY(%(runs)s::uuid[]) OR l.ref_job = ANY(%(jobs)s::uuid[])
+                       OR l.ref_measurement = ANY(%(measurements)s::bigint[]) OR l.ref_artifact = ANY(%(artifacts)s::uuid[])))
+            ORDER BY c.created_at, c.id""", {**view.params, 'runs': list(run_ids), 'jobs': list(job_ids),
+                                             'measurements': list(measurement_ids), 'artifacts': list(artifact_ids)}).fetchall()
+        items = [get_candidate(r['id'], conn, actor) for r in rows]
+        return {'rule': 'candidate-status/1', 'withheld': view.listed(items), 'candidates': items}
+
+    api.helpers = {'candidate_detail': lambda conn, actor, candidate_id: get_candidate(candidate_id, conn, actor),
+                   'records_about': records_about}
     return api

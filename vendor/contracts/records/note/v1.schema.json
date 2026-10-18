@@ -8,6 +8,7 @@
   "required": ["contract", "body", "subjects"],
   "properties": {
     "contract": {"const": "note/1"},
+    "import_key": {"$ref": "../common/v1.schema.json#/$defs/import_key"},
     "body": {"$ref": "../common/v1.schema.json#/$defs/text"},
     "subjects": {
       "description": "The records that the note is about.",

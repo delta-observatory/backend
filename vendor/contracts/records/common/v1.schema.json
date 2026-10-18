@@ -7,6 +7,10 @@
     "uuid": {"type": "string", "format": "uuid"},
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "import_key": {
+      "description": "Optional stable key of a record that an import route writes from an external source, for example research:<agent>/<study>/<item>. A second record with the same key is refused. Agents do not write import keys.",
+      "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,199}$"
+    },
     "reason": {
       "description": "Why a value is missing. A missing value always has a reason.",
       "type": "string", "minLength": 1, "maxLength": 2000

@@ -18,13 +18,14 @@ def make_pool(database_url: str) -> ConnectionPool:
 
 
 def measurement(row: dict) -> dict:
-    """Serialize one measurement row with its value, unit, and uncertainty."""
+    """Serialize one measurement row with its ID, value, unit, and uncertainty. Records refer to the ID."""
     if row['uncertainty_kind'] == 'standard':
         uncertainty = {'kind': 'standard', 'value': row['uncertainty_value']}
     else:
         uncertainty = {'kind': 'unavailable', 'reason': row['uncertainty_reason']}
     value = row['value_boolean'] if row['value_boolean'] is not None else row['value_number']
     item = {
+        'id': row['id'],
         'role': row['role'],
         'name': row['name'],
         'value': value,

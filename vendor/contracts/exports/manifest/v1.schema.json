@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/exports/manifest/v1.schema.json",
+  "title": "Evidence export manifest, version 1",
+  "description": "manifest.json of an evidence export. The export is a ZIP file. The manifest lists every other file of the export with its size and SHA-256. The same request on the same stored records gives the same bytes: the manifest holds no request time. A display calculation in an export carries its rule. The manifest does not list itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "subject", "exported_by", "api", "artifacts", "withheld", "protected_excluded", "files", "limitations"],
+  "properties": {
+    "contract": {"const": "export/1"},
+    "subject": {
+      "description": "The record that the export starts from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["run", "candidate"]},
+        "id": {"type": "string", "format": "uuid"}
+      }
+    },
+    "exported_by": {
+      "description": "The client whose view the export holds. Blinding and the cohort guard apply to an agent's export.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["person", "agent", "service"]}
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contracts_source"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "contracts_source": {"description": "The database repository commit of the API's contract copy.", "type": "string", "minLength": 1}
+      }
+    },
+    "artifacts": {
+      "description": "none: the export lists artifacts with their SHA-256 but holds no artifact file. all: the export holds each listed artifact file.",
+      "enum": ["none", "all"]
+    },
+    "withheld": {
+      "description": "Value groups that blinding withheld from the exporting client.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["labels", "identity", "text"]}
+    },
+    "protected_excluded": {
+      "description": "Observations that the cohort guard left out of the export.",
+      "type": "integer", "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/file"}
+    },
+    "limitations": {
+      "description": "Scientific and technical limits of the exported content, for example the status of the method.",
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "media_type", "content"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$", "not": {"pattern": "\\.\\."}},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "media_type": {"type": "string", "minLength": 1},
+        "content": {
+          "description": "readme: the description of the export. run, observations, measurements, records, methods: API views as JSON or CSV. artifact: a stored artifact file.",
+          "enum": ["readme", "run", "observations", "measurements", "records", "methods", "artifact"]
+        },
+        "artifact_id": {"type": "string", "format": "uuid"},
+        "stored_sha256": {
+          "description": "The SHA-256 of the stored artifact. It equals sha256 unless blinding redacted the file.",
+          "type": "string", "pattern": "^[0-9a-f]{64}$"
+        },
+        "redacted": {"description": "True when blinding removed values from this file.", "type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"content": {"const": "artifact"}}, "required": ["content"]},
+          "then": {"required": ["artifact_id", "stored_sha256"]},
+          "else": {"not": {"anyOf": [{"required": ["artifact_id"]}, {"required": ["stored_sha256"]}]}}
+        }
+      ]
+    }
+  }
+}

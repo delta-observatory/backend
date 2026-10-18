@@ -1,0 +1,53 @@
+{
+  "contract": "export/1",
+  "subject": {
+    "kind": "run",
+    "id": "e0534db5-b3c5-47c2-bd47-b974916e6773"
+  },
+  "exported_by": {
+    "name": "richard",
+    "kind": "person"
+  },
+  "api": {
+    "version": "0.1.0",
+    "contracts_source": "8d255a66b97c8f70e81814ddef73b2dde6a9a8b8"
+  },
+  "artifacts": "all",
+  "withheld": [],
+  "protected_excluded": 0,
+  "files": [
+    {
+      "path": "README.txt",
+      "bytes": 1840,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "media_type": "text/plain; charset=utf-8",
+      "content": "readme"
+    },
+    {
+      "path": "run.json",
+      "bytes": 52011,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "media_type": "application/json",
+      "content": "run"
+    },
+    {
+      "path": "measurements.csv",
+      "bytes": 30122,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "media_type": "text/csv; charset=utf-8",
+      "content": "measurements"
+    },
+    {
+      "path": "artifacts/344f44fc-137f-4329-97f4-44a3bbfa6a7c/search.json",
+      "bytes": 3429,
+      "sha256": "fea108b0ced3b72d598af3672d584ef5741a8bc08ee9c80d790dcb2f4caa858f",
+      "media_type": "application/json",
+      "content": "artifact",
+      "artifact_id": "0b8f6a52-5f0e-4b0e-9a55-1d2f3c4b5a69",
+      "stored_sha256": "fea108b0ced3b72d598af3672d584ef5741a8bc08ee9c80d790dcb2f4caa858f"
+    }
+  ],
+  "limitations": [
+    "tess-bls v1 is provisional. Depth accuracy, completeness, and false-alarm rates are not validated."
+  ]
+}

@@ -106,6 +106,9 @@ class Contracts:
         schemas = [json.loads(p.read_text()) for p in sorted(root.rglob('*.schema.json'))]
         self.registry = Registry().with_resources((s['$id'], Resource.from_contents(s)) for s in schemas)
         self.job_validator = self._validator(root / 'job' / 'v1.schema.json')
+        # manifest.json of an evidence export (contract export/1).
+        self.export_manifest = Draft202012Validator(
+            json.loads((root / 'exports' / 'manifest' / 'v1.schema.json').read_text()), format_checker=FormatChecker())
         # Research records by contract name, for example "candidate/1".
         self.records: dict[str, tuple[dict, Draft202012Validator]] = {}
         for path in sorted((root / 'records').glob('*/v*.schema.json')):

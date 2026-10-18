@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/inputs/tess-spoc-selection/v1.schema.json",
+  "title": "TESS SPOC selection manifest, version 1",
+  "description": "A reviewed list of light-curve files in subdirectories of raw/<dataset_id>/ that tess-spoc-index indexes. The index method reads each manifest of this format in datasets/<dataset_id>/. It indexes only the listed files. It does not scan subdirectories. A file whose size or SHA-256 differs from its entry is a finding and is not indexed. A file whose content an observation already has is not indexed again.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "dataset_id", "owner", "registration", "reason", "files"],
+  "properties": {
+    "format": {"const": "tess-spoc-selection/1"},
+    "dataset_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "owner": {
+      "description": "The producer that acquired the files, for example a research agent ID. The files stay in its directory.",
+      "type": "string", "minLength": 1, "maxLength": 200
+    },
+    "registration": {
+      "description": "The ID of the cohort register entry (experiments/cohorts.json) that registers these observations.",
+      "type": "string", "minLength": 1, "maxLength": 200
+    },
+    "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relative_path", "sha256", "bytes", "source_id", "target_id"],
+        "properties": {
+          "relative_path": {
+            "description": "Path below raw/<dataset_id>/, in a subdirectory.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+_lc\\.fits$",
+            "not": {"pattern": "\\.\\."}
+          },
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 1},
+          "source_id": {
+            "description": "The archive identifier of the file, for example mast:TESS/product/<file name>.",
+            "type": "string", "minLength": 1, "maxLength": 500
+          },
+          "target_id": {"type": "string", "pattern": "^TIC:[0-9]+$"}
+        }
+      }
+    }
+  }
+}
