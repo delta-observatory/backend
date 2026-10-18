@@ -717,15 +717,22 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return submit_run(conn, actor, pol, method, parameters, ids, request.label)
 
     @app.get('/api/runs')
-    def list_runs(conn: Conn, actor: Reader, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
+    def list_runs(conn: Conn, actor: Reader, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
+                  observation_id: uuid.UUID | None = Query(None, description='Only the runs with a job for this observation.')):
         """Runs, newest first, with job counts by state. An agent sees the runs of its campaign and the runs without
-        a campaign, without the jobs of protected observations."""
+        a campaign, without the jobs of protected observations. For an agent, a protected observation_id gives no runs."""
         pol = policy_for(conn, actor)
         pol.require_active('a run list')
         scope, args = pol.run_scope('r')
+        excluded = excluded_for(conn, pol)
+        if observation_id is not None:
+            if observation_id in excluded:
+                return []
+            scope += ' AND EXISTS (SELECT 1 FROM job oj WHERE oj.run_id = r.id AND oj.observation_id = %s)'
+            args = [*args, observation_id]
         ids = [r['id'] for r in conn.execute(f'SELECT id FROM run r WHERE {scope} ORDER BY created_at DESC, id LIMIT %s OFFSET %s',
                                              [*args, limit, offset]).fetchall()]
-        return _run_summaries(conn, ids, pol, excluded_for(conn, pol))
+        return _run_summaries(conn, ids, pol, excluded)
 
     @app.get('/api/runs/default')
     def default_run(conn: Conn, actor: Reader, dataset_id: str | None = None, method_id: str | None = None,

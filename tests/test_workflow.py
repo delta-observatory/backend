@@ -118,6 +118,19 @@ def test_run_views_leave_out_protected_observations(client, conn, artifact_root,
     assert ('run estimate', 'refused') in events and ('artifact metadata', 'refused') in events
 
 
+
+def test_run_list_filters_by_observation(client, conn, artifact_root, cohorts_path):
+    protected, free, other = add_observation(conn, tic=111), add_observation(conn, tic=222), add_observation(conn, tic=333)
+    both, _, _ = add_finished_job(conn, artifact_root, protected)
+    add_job(conn, both, free)
+    only_other, _, _ = add_finished_job(conn, artifact_root, other)
+    assert [r['id'] for r in client.get(f'/api/runs?observation_id={free}').json()] == [str(both)]
+    assert [r['id'] for r in client.get(f'/api/runs?observation_id={other}').json()] == [str(only_other)]
+    write_register(cohorts_path, [('eval-a', 'evaluation', [], ['TIC:111'])])
+    _, agent = agent_in(conn, 'agent-filter')
+    assert client.get(f'/api/runs?observation_id={protected}', headers=agent).json() == []
+    assert [r['id'] for r in client.get(f'/api/runs?observation_id={free}', headers=agent).json()] == [str(both)]
+
 def test_identity_blinding_withholds_paths_errors_and_provenance(client, conn, artifact_root):
     oid = add_observation(conn, labels=LABELS, header=HEADER)
     conn.execute("""UPDATE observation SET provenance = %s WHERE id = %s""",

@@ -275,7 +275,7 @@ All paths start with `/api`. The interactive documentation is at `/api/docs`.
 | `GET /observations/{id}` | One observation with header, labels, findings, provenance, and light-curve artifacts. `provenance` names the selection manifest, owner, source identifier, and registration of a selected file. It is empty for a file in the dataset directory. |
 | `POST /runs` | Creates a run and one queued job for each observation. The status code is 201. |
 | `POST /runs/estimate` | Checks a run request as `POST /runs` does and writes nothing. Returns the full parameters and the work estimate. The estimate has the trial periods of each observation (rule `bls-grid/1`) and the trial limit. It also has the worker time, from the median rate of the newest 200 complete jobs of the method. A failed check gives the same 422 as `POST /runs`. |
-| `GET /runs` | Runs, newest first, with job counts by state and `retry_of`. |
+| `GET /runs` | Runs, newest first, with job counts by state and `retry_of`. `observation_id` limits the list to runs with a job for that observation. An agent gets no runs for a protected observation. |
 | `GET /runs/default` | The default run (rule `default-run/1`). Filters: `dataset_id`, `method_id`, `method_version`. 404 when no analysis run has a complete job. |
 | `GET /runs/compare` | Two runs of one method side by side (rule `run-comparison/1`): `run_a`, `run_b`, optional `observation_id`, `limit`, `offset`. Gives `parameter_differences` and counts of observations in both runs, in one run only, and with a different job state. Each observation row gives each run's job, state, measurements, and the display differences. Different methods give 422. |
 | `GET /runs/{id}` | One run with parameters, inputs, jobs, `retry_of`, and `retries`. |
