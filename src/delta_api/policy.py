@@ -215,6 +215,8 @@ def redact_observation(row: dict, policy: Policy) -> dict:
         for key in IDENTITY_FIELDS:
             if key in row:
                 row[key] = None
+        if 'findings' in row:
+            row['findings'] = redact_findings(row['findings'], policy)
         if 'header' in row:
             row['header'] = {k: v for k, v in row['header'].items() if k in IDENTITY_SAFE_HEADER}
     if policy.withheld():
@@ -230,17 +232,23 @@ def redact_error(error, policy: Policy):
 
 
 def redact_findings(findings, policy: Policy):
-    """Dataset findings. Without identity, file paths become a count."""
+    """Dataset or observation findings. Messages, paths, and manifest references can name a star or a file.
+    Without identity, each finding keeps only its kind and its counts."""
     if policy.identity_visible or not isinstance(findings, list):
         return findings
     out = []
     for finding in findings:
-        if isinstance(finding, dict) and ('path' in finding or 'paths' in finding):
-            count = (1 if 'path' in finding else 0) + len(finding.get('paths') or [])
-            finding = {k: v for k, v in finding.items() if k not in ('path', 'paths')}
-            finding['path_count'] = count
-            finding['withheld'] = ['identity']
-        out.append(finding)
+        if not isinstance(finding, dict):
+            out.append({'kind': None, 'withheld': ['identity']})
+            continue
+        kept = {'kind': finding.get('kind'), 'withheld': ['identity']}
+        if 'path' in finding or 'paths' in finding:
+            kept['path_count'] = (1 if 'path' in finding else 0) + len(finding.get('paths') or [])
+        if isinstance(finding.get('findings'), list):
+            kept['finding_count'] = len(finding['findings'])
+        kept.update({k: v for k, v in finding.items()
+                     if isinstance(v, int) and not isinstance(v, bool) and k not in kept})
+        out.append(kept)
     return out
 
 

@@ -1,5 +1,6 @@
 """Workflow controls and access rules: run scope, the free-text rule, cancellation, retries, run comparison,
 evidence exports, and import keys."""
+import gzip
 import hashlib
 import io
 import json
@@ -429,3 +430,212 @@ def test_import_keys_prevent_duplicate_imported_records(client, conn, artifact_r
     with pytest.raises(psycopg.Error):
         conn.execute("""INSERT INTO candidate (kind, tier, summary, import_key, created_by)
                         SELECT 'transit_signal', 'lab', 'x', 'research:agent/study/c1', id FROM client LIMIT 1""")
+
+
+# ---------- Regression tests from the review of 231e09a ----------
+
+def test_a_second_retry_does_not_repeat_a_job_again(client, conn):
+    oid = add_observation(conn)
+    run = client.post('/api/runs', json={'method': BLS, 'observation_ids': [str(oid)]}).json()
+    fail_job(conn, run['jobs'][0]['id'])
+    first = client.post(f'/api/runs/{run["id"]}/retry', json={})
+    second = client.post(f'/api/runs/{run["id"]}/retry', json={})
+    assert first.status_code == 201 and second.status_code == 409
+    assert conn.execute("SELECT count(*) AS n FROM job WHERE observation_id = %s AND state = 'queued'",
+                        [oid]).fetchone()['n'] == 1
+    # When the repeat also fails, a new retry of the earlier run takes the observation again.
+    fail_job(conn, first.json()['jobs'][0]['id'])
+    assert client.post(f'/api/runs/{run["id"]}/retry', json={}).status_code == 201
+
+
+def test_free_text_rule_covers_decision_reasons_and_import_keys(client, conn):
+    oid = add_observation(conn)
+    campaign_id, agent = agent_in(conn, 'agent-d', blinding='labels_identity')
+    made = client.post('/api/candidates', headers=agent, json={
+        'contract': 'candidate/1', 'kind': 'transit_signal', 'tier': 'lab', 'summary': 's',
+        'observation_ids': [str(oid)], 'evidence': [{'kind': 'external', 'uri': 'lab:x', 'sha256': SHA, 'bytes': 1}]}).json()
+    d = client.post('/api/decisions', json={
+        'contract': 'decision/1', 'candidate_id': made['id'], 'question': {'id': 'triage', 'version': 1},
+        'mode': 'advisory', 'judge': 'model', 'model': {'kind': 'unavailable', 'reason': 'TIC 100100827 is WASP-18'},
+        'packet': {'kind': 'unavailable', 'reason': 'planet WASP-18 b known'},
+        'policy': {'kind': 'unavailable', 'reason': 'target TIC 100100827'},
+        'judged_evidence_status': 'supported', 'action': 'no_action', 'reason': 'r',
+        'evidence': [{'kind': 'external', 'uri': 'lab:y', 'sha256': SHA, 'bytes': 1}]}).json()
+    named = client.post('/api/decisions', json={
+        'contract': 'decision/1', 'candidate_id': made['id'], 'question': {'id': 'triage', 'version': 1},
+        'mode': 'advisory', 'judge': 'model', 'model': {'kind': 'identified', 'provider': 'wasp-18-lab', 'id': 'tic-100100827'},
+        'packet': {'kind': 'sha256', 'sha256': SHA}, 'policy': {'kind': 'unavailable', 'reason': 'none'},
+        'judged_evidence_status': 'supported', 'action': 'no_action', 'reason': 'r',
+        'evidence': [{'kind': 'external', 'uri': 'lab:y', 'sha256': SHA, 'bytes': 1}]}).json()
+    seen = client.get(f'/api/decisions/{d["id"]}', headers=agent).json()
+    assert seen['text_withheld'] is True and seen['reason'] is None
+    assert seen['model'] == {'kind': 'unavailable', 'reason': None}
+    assert seen['packet']['reason'] is None and seen['policy']['reason'] is None
+    seen = client.get(f'/api/decisions/{named["id"]}', headers=agent).json()
+    assert seen['model'] == {'kind': 'identified', 'provider': None, 'id': None}
+    assert client.get(f'/api/decisions/{d["id"]}').json()['model']['reason'] == 'TIC 100100827 is WASP-18'
+    imported = client.post('/api/candidates', params={'campaign_id': str(campaign_id)}, json={
+        'contract': 'candidate/1', 'kind': 'transit_signal', 'tier': 'lab', 'summary': 'x',
+        'import_key': 'research:tic-100100827/wasp-18b', 'observation_ids': [str(oid)],
+        'evidence': [{'kind': 'external', 'uri': 'lab:x', 'sha256': SHA, 'bytes': 1}]}).json()
+    seen = client.get(f'/api/candidates/{imported["id"]}', headers=agent).json()
+    assert seen['summary'] is None and seen['import_key'] is None
+    assert client.get(f'/api/candidates/{imported["id"]}').json()['import_key'] == 'research:tic-100100827/wasp-18b'
+
+
+def test_findings_keep_only_kinds_and_counts_without_identity(client, conn):
+    oid = add_observation(conn, state='invalid')
+    conn.execute('UPDATE observation SET findings = %s WHERE id = %s', [Jsonb([
+        {'kind': 'selected_target_mismatch', 'message': 'The header gives TIC:100100827. The selection manifest gives TIC:5.'},
+        {'kind': 'fits_checksum', 'message': 'tess-0000000100100827_lc.fits: HDU 1 checksum differs.'}]), oid])
+    conn.execute('UPDATE dataset SET findings = %s', [Jsonb([
+        {'kind': 'selected_file_changed', 'selection': 'datasets/d/selections/x.json', 'path': 'tic100100827_lc.fits',
+         'message': f'The manifest gives 2 bytes and {SHA}.'},
+        {'kind': 'invalid_selection', 'selection': 'datasets/d/x.json', 'message': 'TIC 100100827 entry', 'files': 3},
+        {'kind': 'invalid_file', 'path': 'x_lc.fits', 'findings': [{'kind': 'unreadable', 'message': 'TIC 1'}]}])])
+    _, agent = agent_in(conn, 'agent-f', blinding='labels_identity')
+    listed = client.get('/api/observations', headers=agent).json()['items'][0]
+    detail = client.get(f'/api/observations/{oid}', headers=agent).json()
+    for obs in (listed, detail):
+        assert obs['findings'] == [{'kind': 'selected_target_mismatch', 'withheld': ['identity']},
+                                   {'kind': 'fits_checksum', 'withheld': ['identity']}]
+    findings = client.get('/api/datasets', headers=agent).json()[0]['findings']
+    assert findings == [{'kind': 'selected_file_changed', 'withheld': ['identity'], 'path_count': 1},
+                        {'kind': 'invalid_selection', 'withheld': ['identity'], 'files': 3},
+                        {'kind': 'invalid_file', 'withheld': ['identity'], 'path_count': 1, 'finding_count': 1}]
+    assert 'TIC:100100827' in client.get(f'/api/observations/{oid}').json()['findings'][0]['message']
+    _, opened = agent_in(conn, 'agent-o', blinding='open')
+    assert client.get('/api/datasets', headers=opened).json()[0]['findings'][0]['selection']
+
+
+def test_index_run_results_and_exports_leave_out_protected_light_curves(client, conn, artifact_root, cohorts_path):
+    protected, free = add_observation(conn, tic=111), add_observation(conn, tic=222)
+    index = client.post('/api/datasets/tess-spoc-light-curves/index').json()
+    conn.execute("""UPDATE job SET state = 'complete', attempts = 1, finished_at = now(), result = %s WHERE id = %s""",
+                 [Jsonb({'contract': 'result/1', 'job_id': index['job_id'], 'outcome': 'complete', 'measurements': [],
+                         'artifacts': []}), index['job_id']])
+    ids = {}
+    for oid in (protected, free):
+        path = f'jobs/{index["job_id"]}/1/light-curve-{oid}.json.gz'
+        data = gzip.compress(f'{{"secret": "{oid}"}}'.encode())
+        (artifact_root / path).parent.mkdir(parents=True, exist_ok=True)
+        (artifact_root / path).write_bytes(data)
+        ids[oid] = conn.execute("""INSERT INTO artifact (job_id, observation_id, kind, media_type, content_encoding, path,
+                                       bytes, sha256) VALUES (%s, %s, 'light_curve', 'application/json', 'gzip', %s, %s, %s)
+                                   RETURNING id""", [index['job_id'], oid, path, len(data),
+                                                     hashlib.sha256(data).hexdigest()]).fetchone()['id']
+    write_register(cohorts_path, [('eval-a', 'evaluation', [], ['TIC:111'])])
+    # With a zero observation budget, the light curve of the free observation is a read past the budget.
+    campaign_id, tight = agent_in(conn, 'agent-i', budgets={'observations_read': 0})
+    assert client.get(f'/api/runs/{index["run_id"]}/results', headers=tight).status_code == 403
+    assert client.get(f'/api/runs/{index["run_id"]}/export', headers=tight, params={'artifacts': 'all'}).status_code == 403
+    assert conn.execute('SELECT count(*) AS n FROM campaign_read WHERE campaign_id = %s', [campaign_id]).fetchone()['n'] == 0
+    campaign_id, agent = agent_in(conn, 'agent-j')
+    results = client.get(f'/api/runs/{index["run_id"]}/results', headers=agent).json()
+    assert {a['id'] for j in results['jobs'] for a in j['artifacts']} == {str(ids[free])}
+    assert results['protected_excluded'] == 1
+    export = client.get(f'/api/runs/{index["run_id"]}/export', headers=agent, params={'artifacts': 'all'})
+    archive = zipfile.ZipFile(io.BytesIO(export.content))
+    assert not any(str(protected) in name for name in archive.namelist())
+    assert f'artifacts/{ids[free]}/light-curve-{free}.json.gz' in archive.namelist()
+    assert str(ids[protected]) not in {a['id'] for a in json.loads(archive.read('artifacts.json'))}
+    assert {r['observation_id'] for r in conn.execute('SELECT observation_id FROM campaign_read WHERE campaign_id = %s',
+                                                      [campaign_id]).fetchall()} == {free}
+    # A person's export holds both light curves.
+    names = zipfile.ZipFile(io.BytesIO(client.get(f'/api/runs/{index["run_id"]}/export',
+                                                  params={'artifacts': 'all'}).content)).namelist()
+    assert f'artifacts/{ids[protected]}/light-curve-{protected}.json.gz' in names
+
+
+def test_run_export_leaves_out_candidates_that_only_hidden_records_link(client, conn, artifact_root):
+    oid = add_observation(conn)
+    run_id, job_id, _ = add_finished_job(conn, artifact_root, oid)
+    _, agent = agent_in(conn, 'agent-h', blinding='labels')
+    made = client.post('/api/candidates', headers=agent, json={
+        'contract': 'candidate/1', 'kind': 'transit_signal', 'tier': 'lab', 'summary': 's', 'observation_ids': [str(oid)],
+        'evidence': [{'kind': 'external', 'uri': 'lab:x', 'sha256': SHA, 'bytes': 1}]}).json()
+    identity = client.post('/api/assessments', json={
+        'contract': 'assessment/1', 'candidate_id': made['id'], 'axis': 'identity', 'status': 'matched',
+        'basis': 'review', 'reason': 'known', 'evidence': [{'kind': 'job', 'id': str(job_id)}]})
+    assert identity.status_code == 201
+    records = json.loads(zipfile.ZipFile(io.BytesIO(client.get(f'/api/runs/{run_id}/export', headers=agent).content))
+                         .read('records.json'))
+    assert records['candidates'] == []
+    person = json.loads(zipfile.ZipFile(io.BytesIO(client.get(f'/api/runs/{run_id}/export').content)).read('records.json'))
+    assert [c['id'] for c in person['candidates']] == [made['id']]
+
+
+def test_parallel_agent_submissions_cannot_both_pass_the_jobs_budget(client, conn):
+    from concurrent.futures import ThreadPoolExecutor
+    first, second = add_observation(conn, tic=1), add_observation(conn, tic=2)
+    _, agent = agent_in(conn, 'agent-par', budgets={'jobs': 1})
+
+    def submit(oid):
+        return client.post('/api/runs', headers=agent, json={'method': BLS, 'observation_ids': [str(oid)]}).status_code
+
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(submit, [first, second]))
+    assert codes == [201, 403]
+
+
+def test_export_observations_do_not_change_with_a_new_index(client, conn, artifact_root):
+    oid = add_observation(conn)
+    run_id, _, _ = add_finished_job(conn, artifact_root, oid)
+    before = client.get(f'/api/runs/{run_id}/export').content
+    conn.execute("UPDATE observation SET last_seen_at = now() + interval '1 day' WHERE id = %s", [oid])
+    assert client.get(f'/api/runs/{run_id}/export').content == before
+    observations = json.loads(zipfile.ZipFile(io.BytesIO(before)).read('observations.json'))
+    assert 'last_seen_at' not in observations[0] and 'first_indexed_at' not in observations[0]
+
+
+def test_verify_export_reports_header_mismatch_drive_paths_false_redaction_and_bad_manifests(client, conn, artifact_root, tmp_path):
+    oid = add_observation(conn)
+    run_id, _, _ = add_finished_job(conn, artifact_root, oid)
+    response = client.get(f'/api/runs/{run_id}/export')
+
+    def check(data: bytes, *extra) -> tuple[int, dict]:
+        path = tmp_path / f'{hashlib.sha256(data).hexdigest()[:12]}.zip'
+        path.write_bytes(data)
+        done = subprocess.run([sys.executable, str(VERIFY), str(path), *extra], check=False, capture_output=True, text=True)
+        return done.returncode, json.loads(done.stdout)
+
+    assert check(response.content, '--manifest-sha256', response.headers['x-export-manifest-sha256'])[0] == 0
+    status, report = check(response.content, '--manifest-sha256', '0' * 64)
+    assert status == 1 and any('expected manifest' in f for f in report['failures'])
+
+    def rewritten(change) -> bytes:
+        source = zipfile.ZipFile(io.BytesIO(response.content))
+        manifest = json.loads(source.read('manifest.json'))
+        extra = change(manifest)
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, 'w') as archive:
+            for name in source.namelist():
+                if name != 'manifest.json':
+                    archive.writestr(name, source.read(name))
+            for name, data in (extra or {}).items():
+                archive.writestr(name, data)
+            archive.writestr('manifest.json', json.dumps(manifest) if manifest is not None else '{not json')
+        return out.getvalue()
+
+    def drive(manifest):
+        manifest['files'].append({'path': 'C:/x', 'bytes': 1, 'sha256': SHA, 'media_type': 'text/plain', 'content': 'readme'})
+        return {'C:/x': b'x'}
+    status, report = check(rewritten(drive))
+    assert status == 1 and any('C:/x' in f and 'unsafe' in f for f in report['failures'])
+
+    def redacted(manifest):
+        manifest['files'].append({'path': 'artifacts/a/x.json', 'bytes': 1, 'sha256': hashlib.sha256(b'x').hexdigest(),
+                                  'media_type': 'application/json', 'content': 'artifact',
+                                  'artifact_id': '00000000-0000-4000-8000-000000000000', 'stored_sha256': SHA,
+                                  'redacted': True})
+        return {'artifacts/a/x.json': b'x'}
+    status, report = check(rewritten(redacted))
+    assert status == 1 and any('withholds nothing' in f for f in report['failures'])
+
+    bad = io.BytesIO()
+    with zipfile.ZipFile(bad, 'w') as archive:
+        archive.writestr('manifest.json', '{not json')
+    status, report = check(bad.getvalue())
+    assert status == 1 and report['passed'] is False and 'not valid JSON' in report['failures'][0]
+    status, report = check(b'not a zip file')
+    assert status == 1 and 'not a readable ZIP' in report['failures'][0]

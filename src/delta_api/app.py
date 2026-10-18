@@ -667,18 +667,12 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     def submit_run(conn, actor: Actor, pol: Policy, method, parameters: dict, ids: list[str], label: str | None,
                    retry_of=None) -> dict:
-        """Write a run and one queued job for each observation. Agents pass the campaign checks first."""
-        campaign_id = None
+        """Write a run and one queued job for each observation. Agents pass the campaign checks first.
+        The budget check and the insert hold the campaign lock, so two parallel submissions cannot both pass a budget."""
         if pol.agent:
             pol.require_active('a run submission')
-            if pol.campaign['decisions_fixed_at'] is not None:
-                raise HTTPException(403, f'campaign {pol.campaign["name"]} fixed its decisions. It submits no new runs.')
+            # A refusal is recorded outside the insert transaction, so that it stays.
             refuse_protected(conn, pol, ids, 'run submission')
-            estimate, _ = workload(conn, method, parameters, ids)
-            _, exceeded = run_budget(conn, pol, method, len(ids), estimate and estimate['worker_seconds'])
-            if exceeded:
-                raise HTTPException(403, f'the run exceeds the budget of campaign {pol.campaign["name"]}: ' + '; '.join(exceeded))
-            campaign_id = pol.campaign['id']
         run_id = str(uuid.uuid4())
         jobs = []
         for o in ids:
@@ -687,6 +681,22 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 job_id=job_id, run_id=run_id, method=method, parameters=parameters, observation_ids=[o])))
         try:
             with conn.transaction():
+                campaign_id = None
+                if pol.agent:
+                    # The same lock as the observation budget of guard.read. Then read the campaign state again.
+                    conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [str(pol.campaign['id'])])
+                    current = Policy(actor, conn.execute('SELECT * FROM campaign WHERE id = %s',
+                                                         [pol.campaign['id']]).fetchone())
+                    current.require_active('a run submission')
+                    if current.campaign['decisions_fixed_at'] is not None:
+                        raise HTTPException(403, f'campaign {current.campaign["name"]} fixed its decisions. '
+                                                 'It submits no new runs.')
+                    estimate, _ = workload(conn, method, parameters, ids)
+                    _, exceeded = run_budget(conn, current, method, len(ids), estimate and estimate['worker_seconds'])
+                    if exceeded:
+                        raise HTTPException(403, f'the run exceeds the budget of campaign {current.campaign["name"]}: '
+                                            + '; '.join(exceeded))
+                    campaign_id = current.campaign['id']
                 _insert_run(conn, run_id, method, parameters, label, actor, campaign_id, retry_of)
                 with conn.cursor() as cur:
                     cur.executemany('INSERT INTO run_input (run_id, observation_id) VALUES (%s, %s)',
@@ -838,17 +848,20 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         jobs = conn.execute(f"""
             SELECT id, observation_id, state, result FROM job j WHERE run_id = %s {only}
             ORDER BY created_at, id""", [run_id, *extra]).fetchall()
+        # An index job has no observation, but its light-curve artifacts each have one. The guard checks both.
+        artifacts = conn.execute('SELECT a.* FROM artifact a WHERE a.job_id = ANY(%s) ORDER BY a.created_at, a.id',
+                                 [[j['id'] for j in jobs]]).fetchall()
         excluded = 0
         if pol.agent and observation_id is None:
-            protected = guard.protected(conn, pol, [j['observation_id'] for j in jobs if j['observation_id']])
-            excluded = sum(1 for j in jobs if j['observation_id'] in protected)
+            protected = guard.protected(conn, pol, [o for o in {j['observation_id'] for j in jobs} |
+                                                    {a['observation_id'] for a in artifacts} if o])
+            excluded = len(protected)
             jobs = [j for j in jobs if j['observation_id'] not in protected]
-        guard.read(conn, pol, [j['observation_id'] for j in jobs], 'run results')
+            artifacts = [a for a in artifacts if a['observation_id'] not in protected]
+        guard.read(conn, pol, [j['observation_id'] for j in jobs] + [a['observation_id'] for a in artifacts], 'run results')
         job_ids = [j['id'] for j in jobs]
         measurements = conn.execute('SELECT m.* FROM measurement m WHERE m.job_id = ANY(%s) ORDER BY m.id',
                                     [job_ids]).fetchall()
-        artifacts = conn.execute('SELECT a.* FROM artifact a WHERE a.job_id = ANY(%s) ORDER BY a.created_at, a.id',
-                                 [job_ids]).fetchall()
         items = []
         for job in jobs:
             result = job['result'] or {}
@@ -968,14 +981,35 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         parameters = run['parameters']
         if contracts.resolve_parameters(method, parameters) != parameters:
             raise HTTPException(409, 'the stored parameters differ from the current schema defaults. Submit a new run.')
-        ids = [str(r['observation_id']) for r in conn.execute(
-            """SELECT observation_id FROM job WHERE run_id = %s AND state IN ('failed', 'cancelled')
-               ORDER BY observation_id""", [run_id]).fetchall()]
-        if not ids:
-            raise HTTPException(409, f'run {run_id} has no failed or cancelled job')
-        check_inputs(conn, ids)
+        if run['campaign_id'] != (pol.campaign['id'] if pol.agent else None):
+            raise HTTPException(409, 'a retry stays in the campaign of its run. A person retries runs without a campaign, '
+                                     'and an agent retries the runs of its campaign.')
         label = request.label if request and request.label else f'Retry of {run_id}: failed and cancelled jobs'
-        return submit_run(conn, actor, pol, method, parameters, ids, label, retry_of=run_id)
+
+        def open_failures() -> list[str]:
+            # A failed or cancelled job that an earlier retry already repeats, in a job that is not failed or
+            # cancelled, is not repeated again.
+            return [str(r['observation_id']) for r in conn.execute("""
+                SELECT j.observation_id FROM job j
+                WHERE j.run_id = %(run)s AND j.state IN ('failed', 'cancelled')
+                  AND NOT EXISTS (SELECT 1 FROM run r JOIN job k ON k.run_id = r.id
+                                  WHERE r.retry_of = %(run)s AND k.observation_id = j.observation_id
+                                    AND k.state NOT IN ('failed', 'cancelled'))
+                ORDER BY j.observation_id""", {'run': run_id}).fetchall()]
+
+        ids = open_failures()
+        if not ids:
+            raise HTTPException(409, f'run {run_id} has no failed or cancelled job that a retry does not already repeat')
+        check_inputs(conn, ids)
+        if pol.agent:
+            refuse_protected(conn, pol, ids, 'run submission')
+        with conn.transaction():
+            # One retry of a run at a time: the second retry waits, then sees the first retry's jobs.
+            conn.execute('SELECT id FROM run WHERE id = %s FOR UPDATE', [run_id])
+            ids = open_failures()
+            if not ids:
+                raise HTTPException(409, f'run {run_id} has no failed or cancelled job that a retry does not already repeat')
+            return submit_run(conn, actor, pol, method, parameters, ids, label, retry_of=run_id)
 
     # Jobs ---------------------------------------------------------------
 
@@ -1008,19 +1042,21 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         owner = job_row(conn, pol, job_id)
         if owner['run_client_id'] != actor.id and not actor.has('admin'):
             raise HTTPException(403, f'client {actor.name} can cancel only the jobs of its own runs')
-        method = owner['document'].get('method', {})
-        known = contracts.method(method.get('id'), method.get('version'))
-        if owner['state'] == 'running' and known is not None and known.kind == 'index':
-            raise HTTPException(409, 'a running index job is not cancelled. It stops only at its end.')
+        index_methods = [m.id for m in contracts.methods.values() if m.kind == 'index']
         with conn.transaction():
+            # The state check and the index check use the locked row, as in POST /runs/{id}/cancel.
             row = conn.execute("""
-                WITH old AS (SELECT id, state FROM job WHERE id = %s AND state IN ('queued', 'running') FOR UPDATE)
+                WITH old AS (SELECT id, state, document -> 'method' ->> 'id' AS method_id FROM job
+                             WHERE id = %s AND state IN ('queued', 'running') FOR UPDATE)
                 UPDATE job j SET state = 'cancelled', finished_at = now(), cancelled_by = %s, lease_expires_at = NULL
-                FROM old WHERE j.id = old.id
+                FROM old WHERE j.id = old.id AND (old.state = 'queued' OR NOT (old.method_id = ANY(%s)))
                 RETURNING j.id, j.state, j.finished_at, j.cancelled_by, old.state = 'running' AS was_running""",
-                               [job_id, actor.id]).fetchone()
+                               [job_id, actor.id, index_methods]).fetchone()
             if row is None:
-                current = conn.execute('SELECT state FROM job WHERE id = %s', [job_id]).fetchone()
+                current = conn.execute("SELECT state, document -> 'method' ->> 'id' AS method_id FROM job WHERE id = %s",
+                                       [job_id]).fetchone()
+                if current['state'] == 'running' and current['method_id'] in index_methods:
+                    raise HTTPException(409, 'a running index job is not cancelled. It stops only at its end.')
                 raise HTTPException(409, f"job state is {current['state']}; only a queued or running job can be cancelled")
         return row
 
@@ -1085,6 +1121,17 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Evidence exports ---------------------------------------------------
 
+    def readable_artifacts(conn, pol: Policy, rows: list[dict], operation: str) -> tuple[list[dict], int]:
+        """For an agent, leave out the artifacts of protected observations, and record the reads of the others
+        (observation budget) before the export holds their bytes. Return the rows and the number of protected
+        observations."""
+        if not pol.agent:
+            return rows, 0
+        protected = guard.protected(conn, pol, [r['observation_id'] for r in rows if r['observation_id']])
+        rows = [r for r in rows if r['observation_id'] not in protected]
+        guard.read(conn, pol, [r['observation_id'] for r in rows], operation)
+        return rows, len(protected)
+
     def export_artifact_files(conn, pol: Policy, rows: list[dict], limitations: list[str]) -> list:
         """The stored bytes of each artifact, or a redacted JSON document when blinding withholds values."""
         files = []
@@ -1109,7 +1156,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         return files
 
     def export_observations(conn, pol: Policy, ids: list) -> list[dict]:
-        rows = conn.execute(f'SELECT {OBSERVATION_COLUMNS}, header FROM observation WHERE id = ANY(%s) ORDER BY id',
+        """Observation records without the index times, so that a repeated index does not change an export."""
+        rows = conn.execute(f'SELECT {EXPORT_OBSERVATION_COLUMNS}, header FROM observation WHERE id = ANY(%s) ORDER BY id',
                             [list(ids)]).fetchall()
         return [redact_observation(r, pol) for r in rows]
 
@@ -1181,7 +1229,9 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         detail = _run_detail(conn, run_id, pol, excluded_for(conn, pol))
         results = run_results(conn, pol, run_id)
         job_ids = [j['job_id'] for j in results['jobs']]
-        observation_ids = sorted({j['observation_id'] for j in results['jobs'] if j['observation_id']}, key=str)
+        observation_ids = sorted({j['observation_id'] for j in results['jobs'] if j['observation_id']} |
+                                 {a['observation_id'] for j in results['jobs'] for a in j['artifacts']
+                                  if a['observation_id']}, key=str)
         observations = export_observations(conn, pol, observation_ids)
         targets = {o['id']: o['target_id'] for o in conn.execute(
             'SELECT id, target_id FROM observation WHERE id = ANY(%s)', [observation_ids]).fetchall()}
@@ -1190,6 +1240,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         artifact_rows = conn.execute("""SELECT * FROM artifact WHERE job_id = ANY(%s)
                                            OR (observation_id = ANY(%s) AND kind = 'light_curve')
                                         ORDER BY id""", [job_ids, observation_ids]).fetchall()
+        artifact_rows, _ = readable_artifacts(conn, pol, artifact_rows, 'export')
         method_key = (detail['method_id'], detail['method_version'])
         method = contracts.method(*method_key)
         limitations = export_limitations(pol, [method_key], results['protected_excluded'])
@@ -1249,7 +1300,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                                            ORDER BY id""", [job_ids, measurement_ids]).fetchall()
         artifact_rows = conn.execute("""SELECT * FROM artifact WHERE job_id = ANY(%s::uuid[]) OR id = ANY(%s::uuid[])
                                         ORDER BY id""", [job_ids, artifact_ids]).fetchall()
-        limitations = export_limitations(pol, method_keys, 0)
+        artifact_rows, protected_artifacts = readable_artifacts(conn, pol, artifact_rows, 'export')
+        limitations = export_limitations(pol, method_keys, protected_artifacts)
         J = exports_module.json_file
         measurements = export_measurements(conn, pol, measurement_rows, targets)
         files = [
@@ -1264,7 +1316,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         ]
         if artifacts == 'all':
             files += export_artifact_files(conn, pol, artifact_rows, limitations)
-        return export_response('candidate', candidate_id, actor, pol, files, artifacts, 0, limitations)
+        return export_response('candidate', candidate_id, actor, pol, files, artifacts, protected_artifacts, limitations)
 
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
     app.include_router(records_api, prefix='/api')
@@ -1272,9 +1324,10 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     return app
 
 
-OBSERVATION_COLUMNS = """id, dataset_id, product_type, relative_path, bytes, sha256, target_id, sector,
+EXPORT_OBSERVATION_COLUMNS = """id, dataset_id, product_type, relative_path, bytes, sha256, target_id, sector,
     cadence_seconds, time_start, time_stop, time_scale, time_reference, row_count, labels, state,
-    findings, provenance, first_indexed_at, last_seen_at"""
+    findings, provenance"""
+OBSERVATION_COLUMNS = EXPORT_OBSERVATION_COLUMNS + ', first_indexed_at, last_seen_at'
 
 
 def _json_number(expression: str) -> str:

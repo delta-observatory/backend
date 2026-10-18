@@ -88,9 +88,10 @@ A reference to a run, job, measurement, or artifact of another campaign in a rec
 | Endpoints | Before the approval and after the close | Inside an approved, open campaign |
 |---|---|---|
 | `GET /me`, `GET /methods`, `GET /rules`, `GET /campaigns`, `GET /campaigns/{id}` | Allowed. The agent sees only its campaign. | Allowed. |
-| `GET /datasets`, `/observations`, `/targets` | 403 | Allowed. The API leaves out protected observations. Without identity, dataset findings give path counts, not paths. |
+| `GET /datasets`, `/observations`, `/targets` | 403 | Allowed. The API leaves out protected observations. Without identity, a dataset or observation finding keeps only its kind and its counts, for example `path_count`. |
 | `GET /runs`, `/runs/default`, `/runs/{id}`, `/runs/compare` | 403 | Visible runs only. Inputs, jobs, and job counts leave out protected observations, with the number in `protected_excluded`. `default-run/1` chooses among the visible runs. |
-| `GET /runs/{id}/results`, `/runs/{id}/observations/{oid}/fold`, `/jobs/{id}`, `/artifacts/{id}`, `/artifacts/{id}/content` | 403 | Visible runs only. Each observation counts toward the observation budget. A protected observation gives 403 and a refused access event. Without identity, a job error keeps its `kind` and loses `message` and `traceback`. |
+| `GET /runs/{id}/results`, `/runs/{id}/observations/{oid}/fold`, `/jobs/{id}`, `/artifacts/{id}/content` | 403 | Visible runs only. Each observation whose data the response holds counts toward the observation budget, also through the light-curve artifacts of an index run. The results leave out the jobs and artifacts of protected observations. A direct read of a protected observation gives 403 and a refused access event. Without identity, a job error keeps its `kind` and loses `message` and `traceback`. |
+| `GET /artifacts/{id}` | 403 | Visible runs only. Metadata does not count toward the observation budget. An artifact of a protected observation gives 403 and a refused access event. |
 | `POST /runs/estimate`, `POST /runs`, `POST /runs/{id}/retry` | 403 | A protected observation gives 422 and a refused access event. Budgets apply. After `fix-decisions`, `POST /runs` and retries give 403. |
 | `POST /runs/{id}/cancel`, `POST /jobs/{id}/cancel` | 403 | The agent's own runs only. |
 | `GET /runs/{id}/export`, `GET /candidates/{id}/export` | 403 | The same scope, blinding, cohort guard, and budget as the views. |
@@ -131,6 +132,8 @@ When the register is missing or invalid, agent requests that touch observations 
 | `storage_bytes` | Bytes of the artifacts of the campaign jobs. |
 
 A missing key means no limit. A request past a limit gives 403 and writes nothing.
+The budget check of a run submission and the insert hold a lock on the campaign, and they read the campaign state again inside it.
+Two parallel submissions therefore cannot both pass a budget.
 `POST /runs/estimate` gives an agent the budget state after the run, and the budgets that the run would exceed.
 `GET /campaigns/{id}` gives the limit, use, and remaining amount of each budget.
 
@@ -199,7 +202,7 @@ Rule `free-text/1` controls free text while a campaign withholds labels or ident
 |---|---|
 | Text from a client of the agent's own campaign | The text. |
 | Directed text: the campaign title and question, and the title, instructions, and inputs of an agent task | The text. The API does not check it. Its writer is responsible for its content. |
-| Other writers' text. This includes run labels, candidate summaries and labels, assessment reasons, decision reasons and responses, and note bodies. It also includes task report summaries and reasons, and the URI and description of external references. | Null. The record has `text_withheld: true`. A list or detail response adds `text` to `withheld`. |
+| Other writers' text. This includes run labels, candidate summaries and labels, assessment reasons, decision reasons and responses, and note bodies. It also includes the model, packet, and policy reasons and the model provider and ID of a decision. Task report summaries and reasons, import keys, and the URI and description of external references are other writers' text too. | Null. The record has `text_withheld: true`. A list or detail response adds `text` to `withheld`. |
 
 Persons and services receive all text.
 The API does not search text for withheld values. A writer can put a withheld value in directed text, and an agent can learn a value from another source.
@@ -337,6 +340,8 @@ A failed job keeps its error `kind` and `message`: `contract`, `missing_input`, 
 The worker does not repeat a failed job. It repeats only a job whose lease expired, up to `max_attempts`, and each attempt starts again: a method does not resume partial work.
 A worker restart returns its running job to the queue.
 `POST /runs/{id}/retry` repeats the failed and cancelled jobs in a new run with `retry_of`, the same method version, the same parameters, and the same campaign. The database checks this.
+A retry leaves out an observation that an earlier retry of the same run holds in a job that is not failed or cancelled.
+Retries of one run hold a lock on the run, so two parallel retries cannot queue the same observation twice. When no observation remains, the retry gives 409.
 The complete and inconclusive jobs of the earlier run stay, and the retry does not repeat them. Measurements are therefore not duplicated.
 An inconclusive job is a scientific outcome, not a technical failure, so a retry does not repeat it.
 The campaign of a retry must be the campaign of the run.
@@ -362,18 +367,23 @@ The header `X-Export-Manifest-SHA256` gives the SHA-256 of the manifest.
 | `artifacts/<artifact_id>/<file>` | With `artifacts=all`: the stored artifact bytes. Their `sha256` equals `stored_sha256`. A file that blinding redacted has `redacted: true`. |
 
 The ZIP entries have a fixed date and fixed attributes, and the JSON has sorted keys. The manifest holds no request time.
+`observations.json` leaves out the index times, so a repeated index does not change an export.
 The same request on the same stored records therefore gives the same bytes. A new record that refers to the run changes the export.
 An export holds the view of the exporting client. Blinding, the free-text rule, the cohort guard, and the observation budget apply.
+For an agent, an export leaves out the artifacts of protected observations. It counts each observation of an included artifact as a read before it adds the bytes.
+The API checks refusals before it records reads where it can. A budget refusal during the records part of an export can follow recorded reads.
 The export lists external files in the evidence by URI, SHA-256, and size. It does not include them.
 The API builds the ZIP file in a temporary file. Up to 32 MiB stay in memory, and a larger export uses `/tmp`.
 
-Check an export with the script. It needs only the Python standard library. `--schema` also checks the manifest with `jsonschema`:
+Check an export with the script. It needs only the Python standard library. `--schema` also checks the manifest with `jsonschema`.
+`--manifest-sha256` compares the manifest with the `X-Export-Manifest-SHA256` header of the response:
 
 ```bash
-python scripts/verify_export.py export.zip --schema vendor/contracts/exports/manifest/v1.schema.json
+python scripts/verify_export.py export.zip --schema vendor/contracts/exports/manifest/v1.schema.json --manifest-sha256 <hex>
 ```
 
-The script checks the size and SHA-256 of each listed file. It also finds files that the manifest does not list and unsafe paths.
+The script checks the size and SHA-256 of each listed file. It also finds files that the manifest does not list and unsafe paths, including drive paths such as `C:/x`.
+It reports a redacted file in an export that withholds nothing. An unreadable file or manifest gives a JSON failure report.
 It reports an artifact file whose SHA-256 differs from the stored SHA-256 without the redacted mark.
 It prints a JSON report. The exit status is 1 when a check fails.
 

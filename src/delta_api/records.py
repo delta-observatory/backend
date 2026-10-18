@@ -313,7 +313,7 @@ def candidate_out(row: dict, links: dict, view: View) -> dict:
         'kind': row['kind'], 'tier': row['tier'], 'summary': text(row['summary'], hidden),
         'observation_ids': row['observation_ids'],
         'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden),
-        'import_key': row['import_key'], 'text_withheld': hidden,
+        'import_key': text(row['import_key'], hidden), 'text_withheld': hidden,
         'status_rule': 'candidate-status/1',
         'evidence_status': {'status': row['evidence_status'], 'assessment_id': row['evidence_assessment_id'],
                             'basis': row['evidence_basis']} if row['evidence_status'] is not None else None,
@@ -332,39 +332,40 @@ def assessment_out(row: dict, links: dict, view: View) -> dict:
         'method': {'id': row['method_id'], 'version': row['method_version']} if row['method_id'] else None,
         'decision_id': row['decision_id'], 'reason': text(row['reason'], hidden), 'quality_flags': list(row['quality_flags']),
         'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden), 'supersedes': row['supersedes'],
-        'import_key': row['import_key'], 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
+        'import_key': text(row['import_key'], hidden), 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
     }
 
 
 def decision_out(row: dict, links: dict, view: View) -> dict:
     hidden = view.text_hidden(row['actor_campaign_id'])
+    # The model, packet, and policy reasons and names are the writer's text too (rule free-text/1).
     if row['judge'] == 'person':
         model = None
     elif row['model_reason'] is not None:
-        model = {'kind': 'unavailable', 'reason': row['model_reason']}
+        model = {'kind': 'unavailable', 'reason': text(row['model_reason'], hidden)}
     else:
-        model = {'kind': 'identified', 'provider': row['model_provider'], 'id': row['model_id']}
+        model = {'kind': 'identified', 'provider': text(row['model_provider'], hidden), 'id': text(row['model_id'], hidden)}
     return {
         'contract': 'decision/1', 'id': row['id'], 'candidate_id': row['candidate_id'], 'campaign_id': row['campaign_id'],
         'assessment_id': row['assessment_id'],
         'question': {'id': row['question_id'], 'version': row['question_version']},
         'mode': row['mode'], 'judge': row['judge'], 'model_judgment': row['judge'] == 'model', 'model': model,
         'packet': ({'kind': 'sha256', 'sha256': row['packet_sha256']} if row['packet_sha256']
-                   else {'kind': 'unavailable', 'reason': row['packet_reason']}),
+                   else {'kind': 'unavailable', 'reason': text(row['packet_reason'], hidden)}),
         'policy': ({'kind': 'identified', 'id': row['policy_id'], 'version': row['policy_version']} if row['policy_id']
-                   else {'kind': 'unavailable', 'reason': row['policy_reason']}),
+                   else {'kind': 'unavailable', 'reason': text(row['policy_reason'], hidden)}),
         'judged_evidence_status': row['judged_evidence_status'], 'action': row['action'],
         'reason': text(row['reason'], hidden), 'evidence': masked(links.get(row['id'], {}).get('evidence', []), hidden),
         'response': text(row['response'], hidden), 'scores': row['scores'],
         'withheld_from_writer': list(row['withheld']), 'supersedes': row['supersedes'],
-        'import_key': row['import_key'], 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
+        'import_key': text(row['import_key'], hidden), 'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at'],
     }
 
 
 def note_out(row: dict, links: dict, view: View) -> dict:
     hidden = view.text_hidden(row['actor_campaign_id'])
     return {'contract': 'note/1', 'id': row['id'], 'campaign_id': row['campaign_id'], 'body': text(row['body'], hidden),
-            'subjects': masked(links.get(row['id'], {}).get('subject', []), hidden), 'import_key': row['import_key'],
+            'subjects': masked(links.get(row['id'], {}).get('subject', []), hidden), 'import_key': text(row['import_key'], hidden),
             'text_withheld': hidden, 'actor': actor_of(row), 'created_at': row['created_at']}
 
 
@@ -946,7 +947,9 @@ def router(*, connection, need, guard, contracts) -> APIRouter:
               AND EXISTS (
                 SELECT 1 FROM record_link l
                 LEFT JOIN assessment la ON la.id = l.assessment_id LEFT JOIN decision ld ON ld.id = l.decision_id
-                WHERE (l.candidate_id = c.id OR la.candidate_id = c.id OR ld.candidate_id = c.id)
+                WHERE (l.candidate_id = c.id
+                       OR (la.candidate_id = c.id AND NOT {view.hidden('assessment', 'la')})
+                       OR (ld.candidate_id = c.id AND NOT {view.hidden('decision', 'ld')}))
                   AND (l.ref_run = ANY(%(runs)s::uuid[]) OR l.ref_job = ANY(%(jobs)s::uuid[])
                        OR l.ref_measurement = ANY(%(measurements)s::bigint[]) OR l.ref_artifact = ANY(%(artifacts)s::uuid[])))
             ORDER BY c.created_at, c.id""", {**view.params, 'runs': list(run_ids), 'jobs': list(job_ids),
