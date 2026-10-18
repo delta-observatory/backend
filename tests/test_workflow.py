@@ -445,7 +445,7 @@ def test_import_keys_prevent_duplicate_imported_records(client, conn, artifact_r
                         SELECT 'transit_signal', 'lab', 'x', 'research:agent/study/c1', id FROM client LIMIT 1""")
 
 
-# ---------- Regression tests from the review of 231e09a ----------
+# ---------- Regression tests from the review of bb2dc63 ----------
 
 def test_a_second_retry_does_not_repeat_a_job_again(client, conn):
     oid = add_observation(conn)
