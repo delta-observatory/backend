@@ -3,6 +3,8 @@ name = "delta-api"
 version = "0.1.0"
 description = "Delta Observatory stateless application API"
 requires-python = "==3.12.*"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi==0.143.0",
     "uvicorn==0.54.0",
@@ -18,7 +20,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
