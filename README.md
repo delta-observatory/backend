@@ -1,5 +1,7 @@
 # Delta Observatory API
 
+This repository is one component of [Delta Observatory](https://github.com/delta-observatory/delta-observatory). The entry repository describes the application and restores every component.
+
 This repository contains the stateless HTTP API for Delta Observatory.
 The API reads and writes PostgreSQL records and reads artifact files.
 It never calls a worker. Workers claim the jobs that the API inserts.
@@ -423,3 +425,7 @@ uv export --no-dev --no-emit-project --format requirements-txt -o requirements.t
 
 The image runs as uid 1000 and listens on port 8080.
 Build it in the cluster with `kubernetes/scripts/build.sh backend`. The image name is `localhost/delta-backend:<tag>`.
+
+## License
+
+The code is under the [MIT License](LICENSE).
