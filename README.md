@@ -40,7 +40,7 @@ Pool connections use autocommit. Each write transaction commits before the respo
 
 ## Authentication and permissions
 
-Every endpoint except `GET /health` and the API description needs a bearer token: `Authorization: Bearer <token>`.
+Under `/api/`, every endpoint except `GET /health` and the API description needs a bearer token: `Authorization: Bearer <token>`.
 A missing, unknown, or disabled token gives 401. A missing permission gives 403.
 Each token belongs to one client in the `client` table: a person, an agent, or a service. The API stores only the SHA-256 of a token.
 
@@ -418,6 +418,25 @@ Agents can use the existing campaign-scoped observation and result endpoints.
 Campaign restrictions and protected-observation exclusions apply before pagination.
 The returned job counts describe the whole visible run. Index jobs without observation inputs are excluded.
 
+## Optional GUI browsing
+
+`DELTA_GUI_READ_CLIENT` enables a separate `/gui-api/` channel for anonymous browsing.
+The value names an enabled service client with exactly `read` permission and no campaign.
+Create that client through the existing administrator workflow. The browser does not receive its token.
+The setting is empty by default. Without it, `/gui-api/` returns 404 and the frontend retains its sign-in screen.
+
+The GUI channel permits GET, HEAD, and the read-only `POST /runs/estimate` operation.
+It rejects other methods with 403 before endpoint execution, including requests that carry a writer's token.
+The existing permission checks also protect administrator reads.
+Each anonymous request checks the configured client's identity, permissions, and disabled state in PostgreSQL.
+A missing, disabled, or incorrectly privileged service produces 503.
+
+An explicit Authorization header always uses normal token authentication. Invalid credentials never receive anonymous access.
+An authenticated agent retains its campaign scope and blinding through either path.
+The `/api/` channel still requires authentication. Anonymous browsing does not grant search, review, acquisition, reveal, or administration permissions.
+`GET /gui-api/me` reports `anonymous: true` for the configured reader. Authenticated requests report `anonymous: false`.
+The frontend proxy forwards both paths without inserting credentials.
+
 ## Signal review queue
 
 `GET /api/signals` provides the `signal-review/1` view for exploration.
@@ -442,6 +461,7 @@ The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
 `test_signals.py` checks completed-result selection, stored ranking, filters, candidate visibility, campaign restrictions, protected observations, and read budgets.
 `test_catalogue.py` checks catalog registration, exact source wording, missing sources, hashes, path confinement, permissions, and dataset filtering of runs.
+`test_gui.py` checks optional anonymous reads, mutation refusal, invalid credentials, service revocation, and preserved agent blinding.
 `test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
 `test_campaigns.py` checks that blinding, the cohort guard, budgets, and the lifecycle stop prohibited agent actions.
 `test_records.py` checks the record documents, the separation of measurements, judgments, and statuses, the decision freeze, campaign isolation, blinded responses, reference integrity, and permissions.

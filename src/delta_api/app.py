@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, auth, db, fold as fold_module, query as query_module, records, settings as settings_module
 from .auth import Actor
+from .gui import GuiReadOnly
 from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
@@ -69,6 +70,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         redoc_url=None,
         lifespan=lifespan,
     )
+    app.add_middleware(GuiReadOnly, enabled=bool(config.gui_read_client))
     app.state.settings = config
     app.state.contracts = contracts
     app.state.pool = pool
@@ -86,8 +88,13 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     Conn = Annotated[object, Depends(connection)]
 
-    def authenticate(conn: Conn, authorization: str | None = Header(None, description='Bearer token of the client.')) -> Actor:
-        """The client of the request. Every endpoint except health and the API description needs a valid token."""
+    def authenticate(request: Request, conn: Conn, authorization: str | None = Header(None, description='Bearer token of the client.')) -> Actor:
+        """Authenticate an API token or the configured anonymous GUI reader."""
+        if request.scope.get('gui_read') and authorization is None and config.gui_read_client:
+            reader = auth.gui_reader(conn, config.gui_read_client)
+            if reader is None:
+                raise HTTPException(503, 'Anonymous GUI browsing is unavailable.')
+            return reader
         token = authorization[7:].strip() if authorization and authorization[:7].lower() == 'bearer ' else None
         actor = auth.lookup(conn, token) if token else None
         if actor is None:
@@ -136,9 +143,9 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     # Clients ------------------------------------------------------------
 
     @app.get('/api/me')
-    def me(actor: Annotated[Actor, Depends(authenticate)]):
-        """The client of the token, with its permissions."""
-        return actor.describe()
+    def me(request: Request, actor: Annotated[Actor, Depends(authenticate)]):
+        """The current client, its permissions, and whether the request uses anonymous GUI access."""
+        return {**actor.describe(), 'anonymous': bool(request.scope.get('gui_read') and 'authorization' not in request.headers)}
 
     @app.get('/api/clients')
     def list_clients(conn: Conn, _: Admin):

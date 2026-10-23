@@ -66,3 +66,12 @@ def lookup(conn, token: str) -> Actor | None:
     if row is None:
         return None
     return Actor(row['id'], row['name'], row['kind'], frozenset(row['permissions']), row['campaign_id'])
+
+
+def gui_reader(conn, name: str) -> Actor | None:
+    """Resolve a dedicated read-only service. Recheck its permissions and disabled state on every request."""
+    row = conn.execute("""
+        SELECT id, name, kind, permissions, campaign_id FROM client
+        WHERE name = %s AND kind = 'service' AND permissions = ARRAY['read']::text[]
+          AND campaign_id IS NULL AND disabled_at IS NULL""", [name]).fetchone()
+    return Actor(row['id'], row['name'], row['kind'], frozenset({'read'})) if row else None

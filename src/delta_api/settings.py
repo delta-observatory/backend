@@ -17,6 +17,8 @@ class Settings:
     # Optional read-only repository mounts for the dataset browser.
     datasets_root: Path | None = None
     experiments_root: Path | None = None
+    # Optional service client with exactly read permission for /gui-api/.
+    gui_read_client: str | None = None
 
 
 def load() -> Settings:
@@ -29,4 +31,5 @@ def load() -> Settings:
         cohorts_path=Path(os.environ.get('DELTA_COHORTS_PATH', '/data/experiments/cohorts.json')),
         datasets_root=Path(os.environ.get('DELTA_DATASETS_ROOT', '/data/datasets')),
         experiments_root=Path(os.environ.get('DELTA_EXPERIMENTS_ROOT', '/data/experiments')),
+        gui_read_client=os.environ.get('DELTA_GUI_READ_CLIENT') or None,
     )
