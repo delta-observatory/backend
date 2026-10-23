@@ -24,6 +24,7 @@ from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
 from . import exports as exports_module, policy as policy_module
+from . import catalogue
 from .policy import Guard, Policy, policy_for, redact_error, redact_observation, redact_target
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
@@ -718,13 +719,19 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     @app.get('/api/runs')
     def list_runs(conn: Conn, actor: Reader, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
-                  observation_id: uuid.UUID | None = Query(None, description='Only the runs with a job for this observation.')):
+                  observation_id: uuid.UUID | None = Query(None, description='Only the runs with a job for this observation.'),
+                  dataset_id: str | None = Query(None, pattern=DATASET_PATTERN, description='Only runs with visible input observations from this dataset.')):
         """Runs, newest first, with job counts by state. An agent sees the runs of its campaign and the runs without
         a campaign, without the jobs of protected observations. For an agent, a protected observation_id gives no runs."""
         pol = policy_for(conn, actor)
         pol.require_active('a run list')
         scope, args = pol.run_scope('r')
         excluded = excluded_for(conn, pol)
+        if dataset_id is not None:
+            scope += ''' AND EXISTS (SELECT 1 FROM run_input ri JOIN observation o ON o.id = ri.observation_id
+                                    WHERE ri.run_id = r.id AND o.dataset_id = %s
+                                      AND NOT (o.id = ANY(%s::uuid[])))'''
+            args = [*args, dataset_id, list(excluded)]
         if observation_id is not None:
             if observation_id in excluded:
                 return []
@@ -1327,6 +1334,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
     app.include_router(records_api, prefix='/api')
+    app.include_router(catalogue.router(need=need, datasets_root=config.datasets_root,
+                                       experiments_root=config.experiments_root), prefix='/api')
 
     return app
 

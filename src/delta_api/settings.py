@@ -14,6 +14,9 @@ class Settings:
     cors_origins: tuple[str, ...]
     # The shared cohort register, mounted read-only. The cohort guard reads it.
     cohorts_path: Path | None = None
+    # Optional read-only repository mounts for the dataset browser.
+    datasets_root: Path | None = None
+    experiments_root: Path | None = None
 
 
 def load() -> Settings:
@@ -24,4 +27,6 @@ def load() -> Settings:
         contracts_dir=Path(os.environ.get('DELTA_CONTRACTS_DIR', PACKAGE_ROOT / 'vendor' / 'contracts')),
         cors_origins=tuple(o.strip() for o in origins.split(',') if o.strip()),
         cohorts_path=Path(os.environ.get('DELTA_COHORTS_PATH', '/data/experiments/cohorts.json')),
+        datasets_root=Path(os.environ.get('DELTA_DATASETS_ROOT', '/data/datasets')),
+        experiments_root=Path(os.environ.get('DELTA_EXPERIMENTS_ROOT', '/data/experiments')),
     )

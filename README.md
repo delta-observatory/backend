@@ -29,6 +29,8 @@ The API does not import code from `../database` at runtime.
 | `DATABASE_URL` | empty | PostgreSQL connection URI. |
 | `DELTA_ARTIFACT_ROOT` | `/data/artifacts` | Artifact storage root. The API only reads it. |
 | `DELTA_CONTRACTS_DIR` | `vendor/contracts` | Contract schema directory. |
+| `DELTA_DATASETS_ROOT` | `/data/datasets` | Read-only dataset catalog repository. |
+| `DELTA_EXPERIMENTS_ROOT` | `/data/experiments` | Read-only experiment index and registered descriptions. |
 | `DELTA_CORS_ORIGINS` | empty | Comma-separated origins that can call the API from a browser. |
 | `DELTA_COHORTS_PATH` | `/data/experiments/cohorts.json` | The shared cohort register, mounted read-only. The cohort guard reads it. |
 
@@ -395,10 +397,32 @@ Each measurement has `id`, `role`, `name`, `value`, `unit`, `uncertainty`, and `
 `uncertainty` is `{"kind": "standard", "value": …}` or `{"kind": "unavailable", "reason": …}`.
 A time value also has `time_scale` and `time_reference`.
 
+## Catalog documents
+
+`GET /api/catalog` reads dataset descriptions and registered experiment references from read-only repository mounts.
+`catalog.json` registers datasets. The experiment index table registers experiments, and each `experiment.json` supplies its dataset roles and method scopes.
+The API preserves the index status and result text. It does not infer scientific validity from closure or execution status.
+Each source reports availability, issues, and a SHA-256. Metadata and manifests also have individual hashes.
+Missing or invalid entries produce explicit issues. The API does not infer entries from directory names or scan observation files.
+
+`GET /api/catalog/documents/{collection}/{identifier}/README.md` returns plain text, byte count, and SHA-256.
+`collection` accepts only `datasets` and `experiments`. The entry must exist in its available catalog.
+The API confines paths to the configured root and limits each source document to two million bytes.
+These views describe documents. They do not create scientific records or change the database contracts.
+
+Both catalog endpoints require `read` and a person or service client.
+Agent clients receive 403 because repository text can disclose identities outside their campaigns.
+Agents can use the existing campaign-scoped observation and result endpoints.
+
+`GET /api/runs?dataset_id=<id>` selects runs with visible input observations from the dataset.
+Campaign restrictions and protected-observation exclusions apply before pagination.
+The returned job counts describe the whole visible run. Index jobs without observation inputs are excluded.
+
 ## Tests
 
 The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
+`test_catalogue.py` checks catalog registration, exact source wording, missing sources, hashes, path confinement, permissions, and dataset filtering of runs.
 `test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
 `test_campaigns.py` checks that blinding, the cohort guard, budgets, and the lifecycle stop prohibited agent actions.
 `test_records.py` checks the record documents, the separation of measurements, judgments, and statuses, the decision freeze, campaign isolation, blinded responses, reference integrity, and permissions.
