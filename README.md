@@ -418,10 +418,29 @@ Agents can use the existing campaign-scoped observation and result endpoints.
 Campaign restrictions and protected-observation exclusions apply before pagination.
 The returned job counts describe the whole visible run. Index jobs without observation inputs are excluded.
 
+## Signal review queue
+
+`GET /api/signals` provides the `signal-review/1` view for exploration.
+Each ready observation contributes its latest completed visible `tess-bls` job with a complete result.
+A newer failed, cancelled, or incomplete job does not replace that evidence. `run_id` selects a particular run instead.
+The view returns stored search measurements, run and job identifiers, and visible candidate links.
+It introduces no detection threshold, probability, assessment, or new scientific record shape.
+
+Filters accept `dataset_id`, `run_id`, target text `q`, and `sample` values `all`, `unconfirmed`, or `candidates`.
+`unconfirmed` excludes labels `planet_host` and `eclipsing_binary`. Missing labels do not establish an unknown object.
+`candidates` requires a visible candidate record for the observation.
+`sort` accepts `snr`, `period`, `depth`, or `recent`. The default orders stored depth S/N from highest to lowest.
+`limit` defaults to 100 and cannot exceed 200. `offset` provides pagination.
+
+Campaign run scope, protected-observation exclusions, identity and label blinding, free-text restrictions, and read budgets apply.
+The API rejects label-dependent or identity-dependent filters when the campaign withholds those fields.
+The result gives selection and ranking explanations, measurement units, the total, and pagination fields.
+
 ## Tests
 
 The tests use a temporary PostgreSQL 16 server from the `pgserver` package.
 They apply `vendor/migrations/` to it. They do not use mocks for the database.
+`test_signals.py` checks completed-result selection, stored ranking, filters, candidate visibility, campaign restrictions, protected observations, and read budgets.
 `test_catalogue.py` checks catalog registration, exact source wording, missing sources, hashes, path confinement, permissions, and dataset filtering of runs.
 `test_auth.py` checks tokens, permissions, the agent restriction, and actor records.
 `test_campaigns.py` checks that blinding, the cohort guard, budgets, and the lifecycle stop prohibited agent actions.

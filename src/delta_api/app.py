@@ -24,7 +24,7 @@ from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
 from . import exports as exports_module, policy as policy_module
-from . import catalogue
+from . import catalogue, signals
 from .policy import Guard, Policy, policy_for, redact_error, redact_observation, redact_target
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
@@ -1334,6 +1334,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
     app.include_router(records_api, prefix='/api')
+    app.include_router(signals.router(connection=connection, need=need, guard=guard), prefix='/api')
     app.include_router(catalogue.router(need=need, datasets_root=config.datasets_root,
                                        experiments_root=config.experiments_root), prefix='/api')
 
