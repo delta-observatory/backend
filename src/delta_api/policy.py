@@ -41,6 +41,7 @@ LABEL_DIAGNOSTICS = ('reference_comparison', 'reference')
 class Policy:
     actor: Actor
     campaign: dict | None
+    investigation: dict | None = None
 
     @property
     def agent(self) -> bool:
@@ -81,12 +82,16 @@ class Policy:
 
     def run_visible(self, run: dict) -> bool:
         """An agent sees the runs of its campaign and the runs without a campaign."""
+        if self.agent and self.investigation:
+            return run['campaign_id'] == self.campaign['id']
         return not self.agent or run['campaign_id'] is None or run['campaign_id'] == self.campaign['id']
 
     def run_scope(self, alias: str = 'r') -> tuple[str, list]:
         """SQL condition and arguments: the run with the table alias is visible to the client."""
         if not self.agent:
             return 'true', []
+        if self.investigation:
+            return f'{alias}.campaign_id = %s', [self.campaign['id']]
         return f'({alias}.campaign_id IS NULL OR {alias}.campaign_id = %s)', [self.campaign['id']]
 
     def require_active(self, operation: str):
@@ -104,7 +109,9 @@ def policy_for(conn, actor: Actor) -> Policy:
     if actor.campaign_id is None:
         return Policy(actor, None)
     campaign = conn.execute('SELECT * FROM campaign WHERE id = %s', [actor.campaign_id]).fetchone()
-    return Policy(actor, campaign)
+    investigation = conn.execute('SELECT i.*, r.document FROM investigation i LEFT JOIN investigation_revision r '
+                                 'ON r.id=i.approved_revision_id WHERE i.campaign_id=%s', [actor.campaign_id]).fetchone()
+    return Policy(actor, campaign, investigation)
 
 
 def usage(conn, campaign_id) -> dict:
@@ -153,7 +160,15 @@ class Guard:
     def protected(self, conn, policy: Policy, observation_ids=None) -> dict:
         """Protected observations among the IDs. An agent cannot work without the register. A person can."""
         try:
-            return self.register.protected(conn, observation_ids)
+            protected = self.register.protected(conn, observation_ids)
+            if policy.agent and policy.investigation:
+                document = policy.investigation['document']
+                allowed = set(document['observation_ids']) - {e['observation_id'] for e in document['exclusions']} if document else set()
+                rows = conn.execute('SELECT id FROM observation WHERE NOT (id = ANY(%s::uuid[]))'
+                                    + (' AND id = ANY(%s::uuid[])' if observation_ids is not None else ''),
+                                    [list(allowed), *([list(observation_ids)] if observation_ids is not None else [])]).fetchall()
+                protected.update({r['id']: 'outside-approved-investigation' for r in rows})
+            return protected
         except RegisterUnavailable as error:
             if policy.agent:
                 raise HTTPException(503, f'the cohort guard is unavailable: {error}') from error

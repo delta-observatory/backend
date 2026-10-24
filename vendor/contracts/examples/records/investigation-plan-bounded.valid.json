@@ -1,0 +1,53 @@
+{
+  "contract": "investigation-plan/1",
+  "title": "A bounded TESS investigation",
+  "question": "Which repeated brightness decreases does this selected light curve contain?",
+  "purpose": "exploratory",
+  "method": {
+    "id": "tess-bls",
+    "version": 1
+  },
+  "parameters": {
+    "flux_column": "pdcsap_flux",
+    "minimum_rows": 5000,
+    "minimum_baseline_days": 10,
+    "flatten": {
+      "window_length": 1001,
+      "polyorder": 2,
+      "break_tolerance": 5,
+      "niters": 3,
+      "sigma": 3
+    },
+    "search": {
+      "minimum_period": 0.5,
+      "maximum_period": 10.0,
+      "duration_days": [
+        0.04,
+        0.06,
+        0.08,
+        0.1,
+        0.12,
+        0.16,
+        0.2
+      ],
+      "frequency_factor": 1.0,
+      "oversample": 10,
+      "objective": "likelihood",
+      "maximum_grid_trials": 100000
+    }
+  },
+  "observation_ids": [
+    "11111111-1111-4111-8111-111111111111"
+  ],
+  "exclusions": [],
+  "limits": {
+    "download_bytes": 134217728,
+    "files": 8,
+    "jobs": 16,
+    "compute_seconds": 9600,
+    "model_turns": 10,
+    "model_tokens": 100000
+  },
+  "stop_conditions": "Stop after the approved search and evidence review. Request a new approval before changing the plan.",
+  "blinding": "labels_identity"
+}

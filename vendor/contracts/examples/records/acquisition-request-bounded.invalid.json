@@ -1,0 +1,10 @@
+{
+  "contract": "acquisition-request/1",
+  "tic_id": 100100827,
+  "sectors": [
+    2
+  ],
+  "maximum_files": 8,
+  "maximum_bytes": 0,
+  "reserve_bytes": 536870912
+}

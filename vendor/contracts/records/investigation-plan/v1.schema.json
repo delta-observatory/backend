@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/investigation-plan/v1.schema.json",
+  "title": "Investigation plan, version 1",
+  "description": "An immutable plan revision for an exploratory campaign. Approval applies to its exact checksum. This plan does not authorize scientific evaluation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "title", "question", "purpose", "method", "parameters", "observation_ids", "exclusions", "limits", "stop_conditions", "blinding"],
+  "properties": {
+    "contract": {"const": "investigation-plan/1"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "question": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "purpose": {"enum": ["guided_demonstration", "exploratory"]},
+    "method": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version"],
+      "properties": {"id": {"const": "tess-bls"}, "version": {"const": 1}}
+    },
+    "parameters": {"$ref": "../../methods/tess-bls/v1.schema.json"},
+    "observation_ids": {"type": "array", "uniqueItems": true, "maxItems": 128, "items": {"type": "string", "format": "uuid"}},
+    "exclusions": {
+      "type": "array", "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["observation_id", "reason"],
+        "properties": {"observation_id": {"type": "string", "format": "uuid"}, "reason": {"type": "string", "minLength": 1, "maxLength": 2000}}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["download_bytes", "files", "jobs", "compute_seconds", "model_turns", "model_tokens"],
+      "properties": {
+        "download_bytes": {"type": "integer", "minimum": 1, "maximum": 2147483648, "x-unit": "byte"},
+        "files": {"type": "integer", "minimum": 1, "maximum": 128},
+        "jobs": {"type": "integer", "minimum": 1, "maximum": 256},
+        "compute_seconds": {"type": "integer", "minimum": 600, "maximum": 86400, "x-unit": "s"},
+        "model_turns": {"type": "integer", "minimum": 1, "maximum": 50},
+        "model_tokens": {"type": "integer", "minimum": 1000, "maximum": 1000000}
+      }
+    },
+    "stop_conditions": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "blinding": {"enum": ["open", "labels", "labels_identity"]}
+  }
+}

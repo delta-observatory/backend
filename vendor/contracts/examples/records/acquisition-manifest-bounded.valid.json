@@ -1,0 +1,26 @@
+{
+  "contract": "acquisition-manifest/1",
+  "source": "MAST",
+  "dataset_id": "tess-spoc-light-curves",
+  "request": {
+    "contract": "acquisition-request/1",
+    "tic_id": 100100827,
+    "sectors": [
+      2
+    ],
+    "maximum_files": 8,
+    "maximum_bytes": 134217728,
+    "reserve_bytes": 536870912
+  },
+  "products": [
+    {
+      "uri": "mast:TESS/product/tess-test_lc.fits",
+      "filename": "tess-test_lc.fits",
+      "bytes": 2000000,
+      "observation_id": "123",
+      "sector": 2,
+      "tic_id": 100100827,
+      "processing_version": "test"
+    }
+  ]
+}

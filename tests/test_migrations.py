@@ -28,7 +28,7 @@ def apply(conn, names):
 
 
 def test_0004_and_0005_upgrade_a_database_with_existing_records(empty_database):
-    names = sorted(p.name for p in MIGRATIONS.glob('[0-9]*.sql'))
+    names = sorted(p.name for p in MIGRATIONS.glob('[0-9]*.sql') if p.name[:4] <= '0005')
     assert names[-2:] == ['0004_research_records.sql', '0005_workflow.sql']
     with psycopg.connect(empty_database, autocommit=True, row_factory=dict_row) as conn:
         apply(conn, names[:-2])

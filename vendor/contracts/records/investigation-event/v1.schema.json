@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/investigation-event/v1.schema.json",
+  "title": "Investigation event, version 1",
+  "description": "An append-only event. PostgreSQL supplies its campaign, writer, sequence, and time. Credentials must not enter the message.",
+  "type": "object", "additionalProperties": false,
+  "required": ["contract", "kind", "message"],
+  "properties": {
+    "contract": {"const": "investigation-event/1"},
+    "kind": {"enum": ["created", "plan_proposed", "plan_approved", "paused", "resumed", "stopped", "run_submitted", "acquisition_requested", "acquisition_approved", "acquisition_cancelled", "agent_started", "agent_message", "agent_paused", "agent_completed", "agent_error", "instruction", "imported", "limit"]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "revision_id": {"type": "string", "format": "uuid"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "acquisition_id": {"type": "string", "format": "uuid"},
+    "agent_session_id": {"type": "string", "format": "uuid"}
+  }
+}

@@ -25,7 +25,7 @@ from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
 from . import exports as exports_module, policy as policy_module
-from . import catalogue, signals
+from . import catalogue, signals, investigations, acquisition
 from .policy import Guard, Policy, policy_for, redact_error, redact_observation, redact_target
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
@@ -689,7 +689,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
                 job_id=job_id, run_id=run_id, method=method, parameters=parameters, observation_ids=[o])))
         try:
             with conn.transaction():
-                campaign_id = None
+                campaign_id = pol.campaign['id'] if pol.campaign is not None else None
                 if pol.agent:
                     # The same lock as the observation budget of guard.read. Then read the campaign state again.
                     conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [str(pol.campaign['id'])])
@@ -720,6 +720,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     @app.post('/api/runs', status_code=201)
     def create_run(request: RunRequest, conn: Conn, actor: Submitter):
         pol = policy_for(conn, actor)
+        if pol.agent and pol.investigation:
+            raise HTTPException(403, 'Execute the approved investigation revision through its execution endpoint.')
         pol.require_active('a run submission')
         method, parameters, ids = prepare_run(request, conn)
         return submit_run(conn, actor, pol, method, parameters, ids, request.label)
@@ -994,6 +996,8 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         run in retry_of. A method does not resume partial work: each job of the retry starts again."""
         pol = policy_for(conn, actor)
         pol.require_active('a run retry')
+        if pol.agent and pol.investigation:
+            raise HTTPException(403, 'Execute an approved investigation revision to repeat its analysis.')
         run = visible_run(conn, pol, run_id)
         method = contracts.method(run['method_id'], run['method_version'])
         if method is None or method.kind != 'analysis':
@@ -1341,6 +1345,9 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
     app.include_router(records_api, prefix='/api')
+    app.include_router(acquisition.router(connection=connection, need=need, contracts=contracts), prefix='/api')
+    app.include_router(investigations.router(connection=connection, need=need, contracts=contracts,
+                                            check_inputs=check_inputs, submit_run=submit_run), prefix='/api')
     app.include_router(signals.router(connection=connection, need=need, guard=guard), prefix='/api')
     app.include_router(catalogue.router(need=need, datasets_root=config.datasets_root,
                                        experiments_root=config.experiments_root), prefix='/api')

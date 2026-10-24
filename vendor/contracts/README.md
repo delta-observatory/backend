@@ -55,6 +55,8 @@ JSON Schema does not apply `default` values. The API fills defaults before it wr
 | `note/1` | `records/note/v1.schema.json` | Free text and its subjects. |
 | `agent-task/1` | `records/agent-task/v1.schema.json` | Kind, title, instructions, inputs, priority, lease length, and attempts. |
 | `agent-task-report/1` | `records/agent-task-report/v1.schema.json` | The end of a claimed task: outcome, summary, outputs, and the reason of a failure. |
+| `investigation-plan/1` | `records/investigation-plan/v1.schema.json` | An immutable exploratory plan revision with exact inputs, method settings, exclusions, limits, and stop conditions. |
+| `investigation-event/1` | `records/investigation-event/v1.schema.json` | An append-only product event with record references and a credential-free message. |
 
 A record document holds the values that its writer supplies.
 An import route can give a candidate, assessment, decision, or note an `import_key`. A second record with the same key is refused, so a repeated import writes nothing. Agents do not write import keys.
@@ -62,6 +64,13 @@ The API adds the writer, the time, and the campaign. The database adds the state
 A reference names a platform record by kind and ID, or an external file by URI, SHA-256, and size.
 An external file is a proposal, not platform evidence. A `platform` candidate needs a measurement or a job in its evidence.
 A missing value has a reason: the model of a model judgment, the packet checksum, and the decision policy.
+
+An investigation uses the existing campaign identity.
+Plan revisions preserve their parents and exact document hashes.
+A person approves an exact revision checksum before execution.
+Execution links bind each run to its approved revision and a unique request key.
+Repeated requests with that key refer to the same run.
+Plan approval does not authorize independent scientific evaluation or remove campaign blinding and cohort restrictions.
 
 The record documents keep four things apart:
 
@@ -148,3 +157,13 @@ Each consumer tests its output documents against the pinned schemas and examples
 Define job, result, method-parameter, and record shapes only in this repository.
 Do not write these shapes by hand in `backend/` or `workers/`.
 Change the contract here first. Then update each consumer.
+
+## Bounded archive acquisition
+
+`acquisition-request/1` selects one TIC target and at most eight TESS sectors.
+The request sets file, byte, and free-space limits.
+`acquisition-manifest/1` identifies exact public MAST products before approval.
+`acquisition-result/1` records completed files, SHA-256 checksums, and failures.
+The worker checks FITS checksums and compatibility before indexing an acquired file.
+Only a person can approve the exact manifest checksum.
+The worker preserves completed files when an incomplete transfer repeats.

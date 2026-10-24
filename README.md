@@ -492,3 +492,33 @@ Build it in the cluster with `kubernetes/scripts/build.sh backend`. The image na
 ## License
 
 The code is under the [MIT License](LICENSE).
+
+## Investigation control
+
+Investigations use existing campaign identities and worker jobs.
+`GET /investigations/schema` supplies the canonical plan schema and supported method settings.
+`POST /investigations` creates a draft with exact observation IDs and resource limits.
+`POST /investigations/{id}/revisions` saves an immutable proposal and its parent revision.
+The request includes the expected current revision, which prevents lost edits.
+`POST /investigations/{id}/approve` requires the owner and the exact current revision checksum.
+`POST /investigations/{id}/execute` submits the approved settings with an idempotent request key.
+Repeated requests with the same key return the same run.
+Pause blocks new submissions. Active jobs can finish.
+Stop also cancels queued and running jobs.
+Resume requires approval of the current revision.
+The event endpoint preserves instructions, revisions, approvals, and execution links.
+
+Investigation agents can read only approved, included observations and this campaign's runs.
+They cannot approve proposals, expand the selection, or use generic submission and retry endpoints.
+The existing cohort guard and blinding rules still apply.
+An approved investigation keeps its blinding level.
+A different blinding level requires a separate investigation.
+
+## Archive acquisition
+
+`POST /acquisitions` queues a bounded MAST metadata query for a person with `acquire` permission.
+The worker writes the exact product manifest and its checksum.
+`POST /acquisitions/{id}/approve` approves that checksum before downloading.
+Cancellation stops transfers at the next chunk boundary.
+Retry preserves checked files and repeats incomplete transfers.
+The API never contacts MAST or the worker process.

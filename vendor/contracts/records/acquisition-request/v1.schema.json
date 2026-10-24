@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.org/contracts/records/acquisition-request/v1.schema.json",
+  "title": "acquisition-request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "tic_id",
+    "sectors",
+    "maximum_files",
+    "maximum_bytes",
+    "reserve_bytes"
+  ],
+  "properties": {
+    "contract": {
+      "const": "acquisition-request/1"
+    },
+    "tic_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9999999999999999
+    },
+    "sectors": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9999
+      }
+    },
+    "maximum_files": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "maximum_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483648
+    },
+    "reserve_bytes": {
+      "type": "integer",
+      "minimum": 536870912,
+      "maximum": 1099511627776
+    }
+  }
+}

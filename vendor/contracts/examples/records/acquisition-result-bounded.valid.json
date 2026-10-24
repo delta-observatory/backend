@@ -1,0 +1,14 @@
+{
+  "contract": "acquisition-result/1",
+  "files": [
+    {
+      "filename": "tess-test_lc.fits",
+      "bytes": 2000000,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "complete",
+      "message": ""
+    }
+  ],
+  "outcome": "complete",
+  "message": "The selected files passed integrity checks."
+}
