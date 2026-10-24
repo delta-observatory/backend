@@ -53,7 +53,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "pattern": "^[a-z_]+$"
+            "pattern": "^[a-z_][a-z0-9_]*$"
           },
           "columns": {
             "type": "array",
@@ -61,7 +61,7 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "pattern": "^[a-z_]+$"
+              "pattern": "^[a-z_][a-z0-9_]*$"
             }
           }
         }
