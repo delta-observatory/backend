@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.openapi.utils import get_openapi
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -25,7 +26,7 @@ from .contracts import Contracts, ValidationFailure, parameters_sha256
 from .rules import BLS_GRID, CANDIDATE_STATUS, DEFAULT_RUN, FOLD_WINDOW, FREE_TEXT, PERIOD_AGREEMENT, RUN_COMPARISON
 from .cohorts import CohortRegister
 from . import exports as exports_module, policy as policy_module
-from . import catalogue, signals, investigations, acquisition
+from . import catalogue, signals, investigations, acquisition, agent_sessions
 from .policy import Guard, Policy, policy_for, redact_error, redact_observation, redact_target
 
 DATASET_PATTERN = r'^[a-z0-9][a-z0-9-]*$'
@@ -52,7 +53,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     config = config or settings_module.load()
     contracts = Contracts(config.contracts_dir)
     pool = db.make_pool(config.database_url)
-    guard = Guard(CohortRegister(config.cohorts_path))
+    guard = Guard(CohortRegister(config.cohorts_path, standalone_exploration=config.standalone_exploration))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -337,6 +338,10 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     @app.get('/api/methods', dependencies=[Depends(need('read'))])
     def list_methods():
         return [m.describe() for _, m in sorted(contracts.methods.items())]
+
+    @app.get('/api/contracts/records', dependencies=[Depends(need('read'))])
+    def record_schemas():
+        return {name: contracts.expanded_record(name) for name in contracts.records}
 
     @app.get('/api/methods/{method_id}/{version}', dependencies=[Depends(need('read'))])
     def get_method(method_id: str, version: int):
@@ -1283,6 +1288,13 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
             J('records.json', 'records', records_view, text_withheld='text' in records_view['withheld']),
             J('methods.json', 'methods', [method.describe()] if method else []),
         ]
+        investigation_link = conn.execute('SELECT campaign_id FROM investigation_execution WHERE run_id=%s', [run_id]).fetchone()
+        if investigation_link and actor.kind == 'person':
+            cid = investigation_link['campaign_id']
+            investigation = investigations.detail(conn, actor, cid)
+            investigation['events'] = conn.execute('SELECT * FROM investigation_event WHERE campaign_id=%s ORDER BY id', [cid]).fetchall()
+            investigation['sessions'] = conn.execute('SELECT id,document,created_at,updated_at FROM agent_session WHERE campaign_id=%s ORDER BY created_at,id', [cid]).fetchall()
+            files.append(J('investigation.json', 'records', investigation))
         if artifacts == 'all':
             files += export_artifact_files(conn, pol, artifact_rows, limitations)
         return export_response('run', run_id, actor, pol, files, artifacts, results['protected_excluded'], limitations)
@@ -1345,6 +1357,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
 
     # Research records: candidates, assessments, decisions, notes, and agent tasks.
     app.include_router(records_api, prefix='/api')
+    app.include_router(agent_sessions.router(connection=connection, need=need, contracts=contracts), prefix='/api')
     app.include_router(acquisition.router(connection=connection, need=need, contracts=contracts), prefix='/api')
     app.include_router(investigations.router(connection=connection, need=need, contracts=contracts,
                                             check_inputs=check_inputs, submit_run=submit_run), prefix='/api')
@@ -1352,6 +1365,23 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
     app.include_router(catalogue.router(need=need, datasets_root=config.datasets_root,
                                        experiments_root=config.experiments_root), prefix='/api')
 
+    def openapi():
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        document = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        # Schemas remain authoritative in the vendored database contract. Both GUI forms and tools use this view.
+        routes = {'/api/candidates':'candidate/1', '/api/assessments':'assessment/1', '/api/decisions':'decision/1',
+                  '/api/notes':'note/1', '/api/tasks':'agent-task/1', '/api/acquisitions':'acquisition-request/1',
+                  '/api/investigations':'investigation-plan/1',
+                  '/api/investigations/{campaign_id}/sessions':'agent-session/1'}
+        for path, name in routes.items():
+            document['paths'][path]['post']['requestBody']['content']['application/json']['schema'] = contracts.expanded_record(name)
+        schemas = document['components']['schemas']
+        schemas['RevisionRequest']['properties']['document'] = contracts.expanded_record('investigation-plan/1')
+        schemas['ReportRequest']['properties']['report'] = contracts.expanded_record('agent-task-report/1')
+        app.openapi_schema = document
+        return document
+    app.openapi = openapi
     return app
 
 

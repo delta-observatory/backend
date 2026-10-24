@@ -522,3 +522,22 @@ The worker writes the exact product manifest and its checksum.
 Cancellation stops transfers at the next chunk boundary.
 Retry preserves checked files and repeats incomplete transfers.
 The API never contacts MAST or the worker process.
+
+## Managed desktop sessions
+
+The API stores consented agent sessions and their events.
+The desktop host owns the model connection. The API never calls the model runtime.
+A managed credential works only during an active turn in its approved investigation.
+Turn and token limits apply across the investigation's sessions.
+Reconnection rotates the credential. Closing a session disables it.
+Run exports include the related investigation revisions, approvals, events, and session metadata for a person.
+Exports contain no provider credentials or Delta tokens.
+
+`DELTA_STANDALONE_EXPLORATION=true` selects the public desktop policy explicitly.
+This policy requires an approved investigation scope for every agent observation read.
+It does not load the private evaluation register or support claims about independent evaluation.
+Without this setting, a missing cohort register continues to block agent observation access.
+The managed desktop uses the public policy in its separate workspace.
+
+The OpenAPI document expands canonical record schemas for generated GUI forms and agent tools.
+`GET /api/contracts/records` returns the same canonical schemas without unresolved references.

@@ -19,6 +19,8 @@ class Settings:
     experiments_root: Path | None = None
     # Optional service client with exactly read permission for /gui-api/.
     gui_read_client: str | None = None
+    # Explicit mode for an independent public desktop workspace. Never a fallback.
+    standalone_exploration: bool = False
 
 
 def load() -> Settings:
@@ -32,4 +34,5 @@ def load() -> Settings:
         datasets_root=Path(os.environ.get('DELTA_DATASETS_ROOT', '/data/datasets')),
         experiments_root=Path(os.environ.get('DELTA_EXPERIMENTS_ROOT', '/data/experiments')),
         gui_read_client=os.environ.get('DELTA_GUI_READ_CLIENT') or None,
+        standalone_exploration=os.environ.get('DELTA_STANDALONE_EXPLORATION') == 'true',
     )

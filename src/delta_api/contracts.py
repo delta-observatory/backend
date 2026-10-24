@@ -99,6 +99,24 @@ def check_constraints(method: Method, parameters: dict) -> list[dict]:
 
 
 class Contracts:
+    def expanded_record(self, name):
+        """Resolve canonical references for generated forms and agent tools."""
+        schema = self.records[name][0]
+        def expand(node, resolver, seen=()):
+            if isinstance(node, list):
+                return [expand(item, resolver, seen) for item in node]
+            if not isinstance(node, dict):
+                return node
+            if '$ref' in node:
+                ref = node['$ref']
+                if len(seen) > 32:
+                    raise ValueError('A contract reference exceeds the expansion limit.')
+                resolved = resolver.lookup(ref)
+                return {**expand(resolved.contents, resolved.resolver, (*seen, ref)),
+                        **expand({k:v for k,v in node.items() if k != '$ref'}, resolver, seen)}
+            return {k:expand(v, resolver, seen) for k,v in node.items() if k not in ('$id', '$schema', '$defs')}
+        return expand(schema, self.registry.resolver(schema['$id']))
+
     def __init__(self, root: Path):
         self.root = root
         self.source = (root / 'SOURCE').read_text().strip() if (root / 'SOURCE').exists() else 'unknown'

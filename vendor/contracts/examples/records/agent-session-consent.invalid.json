@@ -1,0 +1,12 @@
+{
+  "contract": "agent-session/1",
+  "provider": "codex",
+  "model": "selected-provider-model",
+  "revision_id": "11111111-1111-4111-8111-111111111111",
+  "provider_thread_id": null,
+  "state": "idle",
+  "turns": 0,
+  "tokens": 0,
+  "consent": true,
+  "api_key": "credentials-are-not-records"
+}

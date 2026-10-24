@@ -1,0 +1,25 @@
+{
+  "contract": "reproduction-package/1",
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "evidence": {
+    "path": "evidence.zip",
+    "bytes": 100,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "inputs": [
+    {
+      "observation_id": "00000000-0000-4000-8000-000000000002",
+      "dataset_id": "tess-spoc-light-curves",
+      "relative_path": "synthetic_lc.fits",
+      "bytes": 2000,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "included": true,
+      "source_uri": null
+    }
+  ],
+  "comparison": {
+    "absolute": 0.1,
+    "relative": 1e-10,
+    "meaning": "Numerical agreement only. These tolerances do not measure scientific uncertainty."
+  }
+}

@@ -42,6 +42,7 @@ class Policy:
     actor: Actor
     campaign: dict | None
     investigation: dict | None = None
+    managed_session: dict | None = None
 
     @property
     def agent(self) -> bool:
@@ -98,6 +99,11 @@ class Policy:
         """An agent reads observation data and writes only inside an approved campaign that is not closed."""
         if not self.agent:
             return
+        if self.managed_session and self.managed_session['state'] != 'running':
+            raise HTTPException(403, 'The managed agent session has no active turn.')
+        if self.managed_session and self.investigation and self.investigation['document']:
+            if self.managed_session.get('campaign_tokens',self.managed_session['tokens']) >= self.investigation['document']['limits']['model_tokens']:
+                raise HTTPException(403, 'The managed agent reached its model-use limit.')
         c = self.campaign
         if c['approved_at'] is None:
             raise HTTPException(403, f'campaign {c["name"]} is not approved: {operation} is not allowed yet')
@@ -111,7 +117,11 @@ def policy_for(conn, actor: Actor) -> Policy:
     campaign = conn.execute('SELECT * FROM campaign WHERE id = %s', [actor.campaign_id]).fetchone()
     investigation = conn.execute('SELECT i.*, r.document FROM investigation i LEFT JOIN investigation_revision r '
                                  'ON r.id=i.approved_revision_id WHERE i.campaign_id=%s', [actor.campaign_id]).fetchone()
-    return Policy(actor, campaign, investigation)
+    managed = conn.execute('SELECT document FROM agent_session WHERE client_id=%s', [actor.id]).fetchone()
+    session = managed and dict(managed['document'])
+    if session is not None:
+        session['campaign_tokens'] = conn.execute("SELECT coalesce(sum((document->>'tokens')::bigint),0) AS tokens FROM agent_session WHERE campaign_id=%s", [actor.campaign_id]).fetchone()['tokens']
+    return Policy(actor, campaign, investigation, session)
 
 
 def usage(conn, campaign_id) -> dict:
@@ -160,6 +170,8 @@ class Guard:
     def protected(self, conn, policy: Policy, observation_ids=None) -> dict:
         """Protected observations among the IDs. An agent cannot work without the register. A person can."""
         try:
+            if self.register.standalone_exploration and policy.agent and not policy.investigation:
+                raise HTTPException(403, 'Standalone exploration permits agents only inside approved investigations.')
             protected = self.register.protected(conn, observation_ids)
             if policy.agent and policy.investigation:
                 document = policy.investigation['document']

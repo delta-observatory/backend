@@ -29,13 +29,16 @@ class Register:
 class CohortRegister:
     """Reads the register file again when its modification time or size changes. The cache holds only file content."""
 
-    def __init__(self, path: Path | None):
+    def __init__(self, path: Path | None, *, standalone_exploration=False):
         self.path = path
+        self.standalone_exploration = standalone_exploration
         self._key = None
         self._value: Register | None = None
         self._lock = threading.Lock()
 
     def load(self) -> Register:
+        if self.standalone_exploration:
+            return Register('standalone-exploration', ())
         if self.path is None:
             raise RegisterUnavailable('no cohort register path is configured')
         try:

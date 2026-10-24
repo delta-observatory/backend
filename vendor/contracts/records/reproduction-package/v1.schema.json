@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/reproduction-package/v1.schema.json",
+  "title": "Reproduction package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "run_id",
+    "evidence",
+    "inputs",
+    "comparison"
+  ],
+  "properties": {
+    "contract": {
+      "const": "reproduction-package/1"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "evidence.zip"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "observation_id",
+          "dataset_id",
+          "relative_path",
+          "bytes",
+          "sha256",
+          "included",
+          "source_uri"
+        ],
+        "properties": {
+          "observation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "dataset_id": {
+            "const": "tess-spoc-light-curves"
+          },
+          "relative_path": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*_lc\\.fits$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483648
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "included": {
+            "type": "boolean"
+          },
+          "source_uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "absolute",
+        "relative",
+        "meaning"
+      ],
+      "properties": {
+        "absolute": {
+          "const": 1e-12
+        },
+        "relative": {
+          "const": 1e-10
+        },
+        "meaning": {
+          "const": "Numerical agreement only. These tolerances do not measure scientific uncertainty."
+        }
+      }
+    }
+  }
+}

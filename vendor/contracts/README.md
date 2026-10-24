@@ -167,3 +167,29 @@ The request sets file, byte, and free-space limits.
 The worker checks FITS checksums and compatibility before indexing an acquired file.
 Only a person can approve the exact manifest checksum.
 The worker preserves completed files when an incomplete transfer repeats.
+
+## Managed agent sessions
+
+`agent-session/1` records provider identity, the approved revision, connection state, consent, and measured usage.
+A session has a separate client with campaign scope.
+The API reserves each turn against the approved investigation limits.
+Usage notifications stop further tools and turns when the measured token limit is reached.
+Provider notifications can arrive after token use. The limit is not a provider spending guarantee.
+Credentials are not session fields and never enter these records.
+
+## Desktop reproduction packages
+
+`reproduction-package/1` wraps a checked evidence export and optional original observation files.
+Each input retains its original SHA-256, size, and source identifier.
+The desktop imports these files into a separate investigation through normal indexing and approval.
+It preserves the original evidence without inserting copied measurement records into the database.
+`reproduction-report/1` compares new measurements with the exported measurements.
+The fixed tolerances measure numerical agreement. They do not represent scientific uncertainty.
+The report records runtime agreement separately from numerical agreement.
+
+## Desktop storage and recovery
+
+`desktop-storage/1` sets the workspace size limit and free-space reserve.
+`desktop-backup/1` lists checked CSV table data, files, and migration hashes.
+A restore creates tables from trusted application migrations. It imports table values without running SQL from the backup.
+The restore preserves the source workspace and regenerates local access credentials.

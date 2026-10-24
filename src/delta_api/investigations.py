@@ -177,6 +177,7 @@ def router(*, connection, need, contracts, check_inputs, submit_run):
             revision(conn, campaign_id, request.parent_id)
             document = checked_plan(conn, contracts, request.document)
             if actor.kind == 'agent':
+                policy_for(conn, actor).require_active('a plan proposal')
                 # Agents can propose settings and exclusions. Expanding input scope requires the owner.
                 approved = revision(conn, campaign_id, row['approved_revision_id']) if row['approved_revision_id'] else None
                 if approved is None or not set(document['observation_ids']) <= set(approved['document']['observation_ids']):
@@ -278,6 +279,7 @@ def router(*, connection, need, contracts, check_inputs, submit_run):
                 raise HTTPException(409, 'This execution exceeds the approved job or computing limit.')
             campaign = conn.execute('SELECT * FROM campaign WHERE id=%s', [campaign_id]).fetchone()
             pol = policy_for(conn, actor) if actor.kind == 'agent' else Policy(actor, campaign)
+            pol.require_active('investigation execution')
             method = contracts.method(plan['method']['id'], plan['method']['version'])
             run = submit_run(conn, actor, pol, method, plan['parameters'], ids, plan['title'])
             conn.execute('INSERT INTO investigation_execution(campaign_id,request_key,revision_id,run_id,created_by) VALUES(%s,%s,%s,%s,%s)',

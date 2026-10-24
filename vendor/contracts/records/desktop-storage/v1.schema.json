@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/desktop-storage/v1.schema.json",
+  "title": "Desktop storage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "reserve_bytes",
+    "maximum_bytes"
+  ],
+  "properties": {
+    "contract": {
+      "const": "desktop-storage/1"
+    },
+    "reserve_bytes": {
+      "type": "integer",
+      "minimum": 536870912,
+      "maximum": 1099511627776,
+      "default": 536870912
+    },
+    "maximum_bytes": {
+      "type": "integer",
+      "minimum": 1073741824,
+      "maximum": 1099511627776,
+      "default": 21474836480
+    }
+  }
+}

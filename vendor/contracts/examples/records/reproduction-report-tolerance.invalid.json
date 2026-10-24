@@ -1,0 +1,15 @@
+{
+  "contract": "reproduction-report/1",
+  "source_run_id": "00000000-0000-4000-8000-000000000001",
+  "repeat_run_id": "00000000-0000-4000-8000-000000000003",
+  "status": "matched",
+  "runtime_match": true,
+  "comparison": {
+    "absolute": 0.1,
+    "relative": 1e-10,
+    "meaning": "Numerical agreement only. These tolerances do not measure scientific uncertainty."
+  },
+  "compared": 2,
+  "differences": [],
+  "notes": []
+}

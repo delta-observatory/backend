@@ -1,0 +1,5 @@
+{
+  "contract": "incorrect/1",
+  "reserve_bytes": 536870912,
+  "maximum_bytes": 21474836480
+}
