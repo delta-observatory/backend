@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delta-observatory.local/contracts/records/agent-session/v2.schema.json",
+  "title": "Managed agent session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "provider",
+    "model",
+    "revision_id",
+    "provider_thread_id",
+    "state",
+    "turns",
+    "tokens",
+    "consent"
+  ],
+  "properties": {
+    "contract": {
+      "const": "agent-session/2"
+    },
+    "provider": {
+      "enum": [
+        "codex",
+        "claude"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "revision_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "provider_thread_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "state": {
+      "enum": [
+        "idle",
+        "running",
+        "paused",
+        "error",
+        "closed"
+      ]
+    },
+    "turns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "consent": {
+      "const": true
+    }
+  }
+}

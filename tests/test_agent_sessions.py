@@ -1,12 +1,14 @@
+import pytest
 from conftest import token_for
 from test_investigations import create, approve
 
 
-def test_managed_session_consent_limits_scope_and_reconnect(client,conn):
+@pytest.mark.parametrize('version,provider,model', [('agent-session/1','codex','selected-model'), ('agent-session/2','claude','sonnet')])
+def test_managed_session_consent_limits_scope_and_reconnect(client,conn,version,provider,model):
     investigation=create(client,conn)
     assert approve(client,investigation).status_code==200
     cid=investigation['id'];revision=investigation['head_revision_id']
-    document={'contract':'agent-session/1','provider':'codex','model':'selected-model','revision_id':revision,
+    document={'contract':version,'provider':provider,'model':model,'revision_id':revision,
               'provider_thread_id':None,'state':'idle','turns':0,'tokens':0,'consent':True}
     foreign=token_for(conn,'outside-agent')
     assert client.post(f'/api/investigations/{cid}/sessions',json=document,headers=foreign).status_code==404

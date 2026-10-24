@@ -170,7 +170,8 @@ The worker preserves completed files when an incomplete transfer repeats.
 
 ## Managed agent sessions
 
-`agent-session/1` records provider identity, the approved revision, connection state, consent, and measured usage.
+`agent-session/2` supports OpenAI and Anthropic sessions. Version 1 remains available for existing OpenAI sessions.
+The record contains provider identity, the approved revision, connection state, consent, and measured usage.
 A session has a separate client with campaign scope.
 The API reserves each turn against the approved investigation limits.
 Usage notifications stop further tools and turns when the measured token limit is reached.

@@ -24,8 +24,14 @@ def router(*, connection, need, contracts):
         require_owner(investigation, actor)
         return row, investigation
 
+    def session_document(document):
+        version = document.get('contract')
+        if version not in ('agent-session/1', 'agent-session/2'):
+            raise HTTPException(422, 'Unsupported agent session contract.')
+        return contracts.record(version, document)
+
     def write(conn, row, document):
-        document = contracts.record('agent-session/1', document)
+        document = session_document(document)
         return conn.execute('UPDATE agent_session SET document=%s,updated_at=now() WHERE id=%s RETURNING *',
                             [Jsonb(document), row['id']]).fetchone()
 
@@ -41,7 +47,7 @@ def router(*, connection, need, contracts):
             row = load(conn, actor, campaign_id, lock=True)
             require_owner(row, actor)
             require_open(row)
-            document = contracts.record('agent-session/1', document)
+            document = session_document(document)
             if row['state'] != 'ready' or str(row['approved_revision_id']) != document['revision_id']:
                 raise HTTPException(409, 'Connect an agent only to the current approved plan.')
             if document['turns'] or document['tokens'] or document['provider_thread_id'] is not None or document['state'] != 'idle':
@@ -97,7 +103,7 @@ def router(*, connection, need, contracts):
                 raise HTTPException(409, 'A closed session cannot change.')
             if set(changes) - {'state','provider_thread_id','tokens'}:
                 raise HTTPException(422, 'Only connection state, provider thread, and measured tokens can change here.')
-            document = contracts.record('agent-session/1', {**row['document'], **changes})
+            document = session_document({**row['document'], **changes})
             if document['tokens'] < row['document']['tokens'] or document['state'] == 'running' and row['document']['state'] != 'running':
                 raise HTTPException(409, 'Usage cannot decrease. Reserve a turn before entering the running state.')
             result = write(conn, row, document)

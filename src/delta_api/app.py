@@ -1373,7 +1373,7 @@ def create_app(config: settings_module.Settings | None = None) -> FastAPI:
         routes = {'/api/candidates':'candidate/1', '/api/assessments':'assessment/1', '/api/decisions':'decision/1',
                   '/api/notes':'note/1', '/api/tasks':'agent-task/1', '/api/acquisitions':'acquisition-request/1',
                   '/api/investigations':'investigation-plan/1',
-                  '/api/investigations/{campaign_id}/sessions':'agent-session/1'}
+                  '/api/investigations/{campaign_id}/sessions':'agent-session/2'}
         for path, name in routes.items():
             document['paths'][path]['post']['requestBody']['content']['application/json']['schema'] = contracts.expanded_record(name)
         schemas = document['components']['schemas']
